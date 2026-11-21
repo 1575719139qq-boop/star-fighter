@@ -927,6 +927,7 @@ function startGame() {
 // 所有主武器 / 副武器 / 专属技能 / 僚机都按原样开火，结束后再整体转回来
 let SURV = false, survT = 0, survSpawnT = 0, survEliteT = 0, survRockT = 0, survBgX = 0, survBgY = 0, survBest = 0;
 // 星球占领模式（原型）：在生存模式的玩法上加入巨大的可破坏星球
+let runHpK = 1;
 let PLANET = false, planets = [], planetN = 0, planetOwned = 0, planetNextT = 0, ore = 0, buildCtx = null, oreMul = 1, oreGot = 0, capRes = null, modN = {};
 try { survBest = +localStorage.getItem('starFighterSurvBest') || 0; } catch (e) { }
 // SURV_ENEMY_SPEED：生存模式里所有敌人（含撞击艇冲刺）的移动速度倍率
@@ -969,8 +970,10 @@ function startSurvival() {
   // 星球：前方远处有一颗，飞进轨道圈读条占领，占领后可以建基地
   // 每局只有一颗目标星球；占领后结算，之前的战机留下守护，已占领的星球给之后每局永久加成
   PLANET = true; planets = []; planetN = save.planets.length; planetOwned = save.planets.length; planetNextT = 0; ore = 0; oreGot = 0; oreMul = 1; modN = {}; buildCtx = null; capRes = null;
+  const tg0 = smTarget(); runHpK = tg0 ? 1 + .3 * SECTORS[tg0.sec].diff : 1;
   planetBonusApply(player);
   addPlanet(-Math.PI / 2, 1150);
+  techApply(player);
   floatText(W / 2, SURV_Y - 130, '生存模式', 20, '#9fe8ff', 2.2);
   floatText(W / 2, SURV_Y - 100, '前方有星球', 14, '#ffd28a', 2.6);
 }
@@ -1141,6 +1144,8 @@ const PLANET_PAL = [
   { name: '霜蓝星', base: ['#24405a', '#7aa3c2'], blob: ['#bfe2f8', '#101e2c'], rim: '6,14,24', dust: '180,225,255', atm: '120,190,255' },
   { name: '翠林星', base: ['#1c3a1c', '#5f8f3e'], blob: ['#9cc466', '#0e2410'], rim: '6,16,6', dust: '180,235,130', atm: '120,255,160' },
   { name: '沙丘星', base: ['#5e4520', '#c9a35a'], blob: ['#ead08a', '#3c2a10'], rim: '26,16,4', dust: '255,225,150', atm: '255,210,120' },
+  { name: '晶体星', base: ['#2a1f4a', '#6a5aa8'], blob: ['#b8a8ff', '#140e2a'], rim: '12,6,30', dust: '200,180,255', atm: '170,140,255' },
+  { name: '毒雾星', base: ['#2c3a12', '#7a8a2a'], blob: ['#c8e05a', '#141c06'], rim: '14,20,4', dust: '210,240,120', atm: '180,255,90' },
 ];
 const PLANET_SHAPES = ['lumpy', 'crescent', 'twin', 'caves'];
 // 已占领星球（存档）给之后每局的永久加成；基地等级越高加成越大（护甲合计最多 +3）
@@ -1149,17 +1154,21 @@ const PLANET_BONUS = [
   { gl: 'plate', c: '140,200,255', t: v => `护甲 +${v}` },
   { gl: 'gem', c: '130,240,150', t: v => `经验 +${Math.round(v)}%` },
   { gl: 'ore', c: '255,210,110', t: v => `矿石 +${Math.round(v)}%` },
+  { gl: 'crosshair', c: '200,170,255', t: v => `暴击 +${Math.round(v)}%` },
+  { gl: 'gauge', c: '190,255,110', t: v => `攻速 +${Math.round(v)}%` },
 ];
-const PLANET_BONUS_BASE = [10, 1, 20, 50], BASE_MAX = 5;
+const PLANET_BONUS_BASE = [10, 1, 20, 50, 5, 5], BASE_MAX = 5;
 const baseLvK = lv => 1 + .5 * ((lv || 1) - 1);
-function planetBonusOf(s) { const k = s.k % 4; return k === 1 ? Math.floor(baseLvK(s.lv)) : PLANET_BONUS_BASE[k] * baseLvK(s.lv); }
-function planetBonusTotals() { const t = [0, 0, 0, 0]; for (const s of save.planets) t[s.k % 4] += planetBonusOf(s); t[1] = Math.min(3, t[1]); return t; }
+function planetBonusOf(s) { const k = s.k; return k === 1 ? Math.floor(baseLvK(s.lv)) : PLANET_BONUS_BASE[k] * baseLvK(s.lv); }
+function planetBonusTotals() { const t = PLANET_BONUS.map(() => 0); for (const s of save.planets) t[s.k] += planetBonusOf(s); t[1] = Math.min(3, t[1]); return t; }
 function planetBonusApply(P) {
   const t = planetBonusTotals();
   P.s.dmgMul *= 1 + t[0] / 100;
   P.maxArmor += t[1]; P.armor = P.maxArmor;
   P.s.xpMul += t[2] / 100;
   oreMul = 1 + t[3] / 100;
+  P.s.crit += t[4] / 100;
+  P.s.aspd = (P.s.aspd || 0) + t[5] / 100;
 }
 // 局外产出：每局结束，已占领星球按基地等级产出矿石和星晶；本局没花完的矿石也存进仓库
 const baseIncome = s => ({ ore: 4 * (s.lv || 1), cr: 10 * (s.lv || 1) });
@@ -1173,7 +1182,9 @@ function planetHarvest() {
 const planetTarget = () => PLANET ? planets.find(p => !p.owned) : null;
 function planetSlowK() { const t = planetTarget(); return t && t.kind === 1 && t.inOrbit ? .72 : 1; }   // 霜蓝星：移动变慢
 function addPlanet(a, dist) {
-  const i = planetN++, kind = save.nextKind != null ? save.nextKind % 4 : i % 4, pal = PLANET_PAL[kind], shape = PLANET_SHAPES[i % PLANET_SHAPES.length];
+  // 种类和难度来自星图选中的目标（星区越靠后越难）
+  const tg = smTarget(), kind = tg ? sectorKind(tg.sec, tg.slot) : planetN % PLANET_PAL.length, i = tg ? SECTORS[tg.sec].diff * 4 + sectorDoneCount(tg.sec) : planetN; planetN++;
+  const pal = PLANET_PAL[kind], shape = PLANET_SHAPES[(i + (tg ? tg.slot : 0)) % PLANET_SHAPES.length];
   const R = Math.min(680, 480 + i * 40) * rnd(.95, 1.05), half = Math.ceil(R * 1.3) + 8, S = half * 2, c = half;
   const cv = document.createElement('canvas'); cv.width = cv.height = S; const g = cv.getContext('2d');
   // 起伏的闭合轮廓：多个正弦叠加的半径
@@ -1220,6 +1231,26 @@ function addPlanet(a, dist) {
   } else if (kind === 2) {
     g.fillStyle = '#15331a'; for (let k = 0; k < 28; k++) { const x = rnd(c - R, c + R), y = rnd(c - R, c + R); for (let j = 0; j < 9; j++) { g.globalAlpha = .42; g.beginPath(); g.arc(x + rnd(-40, 40), y + rnd(-30, 30), rnd(10, 26), 0, TAU); g.fill(); } }
     for (let k = 0; k < 4; k++) { const x = rnd(c - R * .6, c + R * .6), y = rnd(c - R * .6, c + R * .6), r = rnd(30, 70), a = rnd(0, TAU); g.globalAlpha = .85; g.fillStyle = '#1d4a6a'; g.beginPath(); g.ellipse(x, y, r, r * .65, a, 0, TAU); g.fill(); g.globalAlpha = .3; g.strokeStyle = '#bfe8ff'; g.lineWidth = 3; g.stroke(); }
+  } else if (kind === 4) {
+    // 晶体星：一簇簇发光的晶柱
+    for (let k = 0; k < 24; k++) {
+      const x = rnd(c - R * .9, c + R * .9), y = rnd(c - R * .9, c + R * .9), n = 3 + (Math.random() * 4 | 0);
+      for (let j = 0; j < n; j++) {
+        const a = rnd(0, TAU), L = rnd(16, 46), w = L * rnd(.18, .28);
+        g.save(); g.translate(x, y); g.rotate(a);
+        const gr = g.createLinearGradient(0, 0, L, 0); gr.addColorStop(0, 'rgba(120,90,220,.75)'); gr.addColorStop(1, 'rgba(220,210,255,.95)');
+        g.globalAlpha = .9; g.fillStyle = gr; g.beginPath(); g.moveTo(0, -w / 2); g.lineTo(L * .8, -w / 2); g.lineTo(L, 0); g.lineTo(L * .8, w / 2); g.lineTo(0, w / 2); g.closePath(); g.fill();
+        g.globalAlpha = .5; g.strokeStyle = '#f0ecff'; g.lineWidth = 1; g.stroke(); g.restore();
+      }
+    }
+  } else if (kind === 5) {
+    // 毒雾星：冒泡的毒液池
+    for (let k = 0; k < 16; k++) {
+      const x = rnd(c - R * .8, c + R * .8), y = rnd(c - R * .8, c + R * .8), r = rnd(24, 70);
+      g.globalAlpha = .7; g.fillStyle = '#5c8a10'; g.beginPath(); g.ellipse(x, y, r, r * .7, rnd(0, TAU), 0, TAU); g.fill();
+      g.globalAlpha = .35; g.strokeStyle = '#d8ff70'; g.lineWidth = 3; g.stroke();
+      g.fillStyle = '#e0ff8a'; for (let j = 0; j < 6; j++) { g.globalAlpha = rnd(.3, .7); g.beginPath(); g.arc(x + rnd(-r, r) * .6, y + rnd(-r, r) * .4, rnd(2, 6), 0, TAU); g.fill(); }
+    }
   } else {
     g.lineWidth = 3; for (let k = 0; k < 34; k++) { const y0 = c - R + k * R * 2 / 34, ph = rnd(0, TAU); g.globalAlpha = .16; g.strokeStyle = k & 1 ? '#fff0c0' : '#5a3c14'; g.beginPath(); for (let j = 0; j <= 50; j++) { const x = c - R * 1.2 + j * R * 2.4 / 50, y = y0 + Math.sin(x / 60 + ph) * 14; if (j) g.lineTo(x, y); else g.moveTo(x, y); } g.stroke(); }
   }
@@ -1238,7 +1269,7 @@ function addPlanet(a, dist) {
   }
   const P = player, x = P.x + Math.cos(a) * dist, y = P.y + HIT_OY + Math.sin(a) * dist;
   const p = { kind, i, bornT: survT, k0: P.kills, ore0: oreGot, hurt: false, orbitT0: -1, veins, sites: [], foes: [], core: null, shells: [], x, y, R, half, cv, g, mask, mw, pal,
-    name: pal.name + '-' + (i + 1), orbit: R * 1.25 + 150, owned: false, inOrbit: false, envT: 2, raidT: 35 };
+    sec: tg ? tg.sec : -1, slot: tg ? tg.slot : -1, name: tg ? planetLabel(tg.sec, tg.slot) : pal.name + '-' + (i + 1), orbit: R * 1.25 + 150, owned: false, inOrbit: false, envT: 2, raidT: 35 };
   planets.push(p);
   planetLayout(p, a + Math.PI);
 }
@@ -1332,6 +1363,8 @@ function foeStep(p, dt) {
 function planetEnv(p, dt) {
   if ((p.envT -= dt) > 0) return;
   if (p.kind === 0) { p.envT = 3.2; const h = hitPt(); survFx.push({ k: 'shell', x: h.x + rnd(-70, 70), y: h.y + rnd(-70, 70), t: 0, delay: 1.3, r: 52 }); }
+  else if (p.kind === 4) { p.envT = 3.6; const h = hitPt(), a = rnd(0, TAU), d = rnd(110, 190); survFx.push({ k: 'wave', x: h.x + Math.cos(a) * d, y: h.y + Math.sin(a) * d, r: 8, spd: 170, max: 170, hit: false }); }   // 晶刺爆发：冲击环
+  else if (p.kind === 5) { p.envT = 4.5; const h = hitPt(); survFx.push({ k: 'gas', x: h.x + rnd(-90, 90), y: h.y + rnd(-90, 90), r: 72, t: 0, life: 6, tick: .8 }); }   // 毒雾：站在里面会持续掉护甲
   else if (p.kind === 2) { p.envT = 7; const a = Math.atan2(p.y - player.y, p.x - player.x); for (let k = 0; k < 4; k++) survSpawn('swarm', a + rnd(-.5, .5)); }
   else p.envT = 1;
 }
@@ -1365,7 +1398,10 @@ function planetStep(dt) {
   }
   if (tp && !P.dead) {
     tp.inOrbit = Math.hypot(P.x - tp.x, P.y + HIT_OY - tp.y) < tp.orbit;
-    if (tp.inOrbit && tp.orbitT0 < 0) { tp.orbitT0 = survT; floatText(W / 2, SURV_Y - 150, tp.name, 20, `rgb(${tp.pal.atm})`, 2); }
+    if (tp.inOrbit && tp.orbitT0 < 0) {
+      tp.orbitT0 = survT; floatText(W / 2, SURV_Y - 150, tp.name, 20, `rgb(${tp.pal.atm})`, 2);
+      if (techHas('b4')) { const s = tp.sites[0]; s.b = 'turret'; s.lv = 1; s.hp = s.max = buildHp('turret', 1); }   // 科技「轨道补给」：自带一座炮塔
+    }
     if (tp.inOrbit) { survSpawnT -= dt * .4; planetEnv(tp, dt); }
     foeStep(tp, dt);
   }
@@ -1380,8 +1416,9 @@ function planetCaptured(p) {
   const P = player, took = survT - p.bornT, hold = survT - Math.max(0, p.orbitT0);
   const stars = [{ n: '占领成功', ok: true }, { n: '无伤占领', ok: !p.hurt }, { n: '速攻', sub: '进入轨道 3 分钟内', ok: hold <= 180 }];
   const got = stars.filter(s => s.ok).length, bonus = STAGE_REWARD + (got - 1) * 100;
-  save.planets.push({ k: p.kind, name: p.name, lv: 1 }); save.nextKind = null; save.crystals += bonus; P.earned = (P.earned || 0) + bonus;
-  capRes = { p, took, kills: P.kills - p.k0, ore: Math.floor(oreGot - p.ore0), stars, got, fighter: SKINS[curSkin].name };
+  const done0 = sectorsDone(); save.planets.push({ k: p.kind, name: p.name, lv: 1, sec: p.sec, slot: p.slot }); save.target = null;
+  const unlock = sectorsDone() > done0 && SECTORS[sectorsDone()] ? SECTORS[sectorsDone()].name : ''; save.crystals += bonus; P.earned = (P.earned || 0) + bonus;
+  capRes = { p, took, kills: P.kills - p.k0, ore: Math.floor(oreGot - p.ore0), stars, got, fighter: SKINS[curSkin].name, unlock };
   finishRun();
 }
 // ================= 基地：地表一圈 8 个地基，飞上去建造；建筑有血量，会被敌人攻击 =================
@@ -1397,6 +1434,7 @@ const BUILDS = {
 };
 const BUILD_IDS = Object.keys(BUILDS);
 const buildMax = id => BUILDS[id].cost.length;
+const buildCost = (id, lv) => { const c = BUILDS[id].cost[lv - 1]; return c === undefined ? undefined : Math.round(c * (techHas('b2') ? .8 : 1)); };   // 科技「预制建材」：造价八折
 const buildHp = (id, lv) => BUILDS[id].hp * (1 + .5 * (lv - 1));
 // 改装台：矿石换本局强化，可以反复买，越买越贵
 const MODS = {
@@ -1491,7 +1529,7 @@ function buildAct(a) {
     ore -= cost; modN[id] = (modN[id] || 0) + 1; MODS[id].apply(player); sfxPick(); return;
   }
   if (!a.startsWith('b:')) return;
-  const { p, pad: s } = buildCtx, id = a.slice(2), lv = s.b ? s.lv + 1 : 1, cost = BUILDS[id].cost[lv - 1];
+  const { p, pad: s } = buildCtx, id = a.slice(2), lv = s.b ? s.lv + 1 : 1, cost = buildCost(id, lv);
   if (cost === undefined || buildBlocked(s, id) || ore < cost) { tone(150, .12, 'square', .04); return; }
   ore -= cost; s.b = id; s.lv = lv; s.t = 0; s.hp = s.max = buildHp(id, lv); sfxPick();
   if (id === 'radar') { for (const v of p.veins) v.found = true; p.core.revealed = true; }
@@ -1510,7 +1548,7 @@ function drawBuild() {
     // 空地基：两列卡片
     const cw = (W - 70) / 2, chh = 96;
     ids.forEach((id, i) => {
-      const d = BUILDS[id], cost = d.cost[0], why = buildBlocked(s, id), ok = !why && ore >= cost, x = 30 + (i % 2) * (cw + 10), y = 196 + Math.floor(i / 2) * (chh + 10), col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
+      const d = BUILDS[id], cost = buildCost(id, 1), why = buildBlocked(s, id), ok = !why && ore >= cost, x = 30 + (i % 2) * (cw + 10), y = 196 + Math.floor(i / 2) * (chh + 10), col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
       uiRects.push({ x, y, w: cw, h: chh, act: 'b:' + id });
       ctx.fillStyle = ok ? 'rgba(10,30,50,.94)' : 'rgba(10,20,30,.85)'; roundRect(x, y, cw, chh, 8); ctx.fill();
       ctx.strokeStyle = ok ? col : 'rgba(150,160,170,.45)'; ctx.lineWidth = 1.5; ctx.stroke();
@@ -1524,7 +1562,7 @@ function drawBuild() {
   } else {
     const ch = 72, gap = ch + 12;
     ids.forEach((id, i) => {
-      const d = mod ? MODS[id] : BUILDS[id], lv = mod ? 0 : s.lv + 1, cost = mod ? modCost(id) : d.cost[lv - 1], ok = ore >= cost, y = 200 + i * gap, col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
+      const d = mod ? MODS[id] : BUILDS[id], lv = mod ? 0 : s.lv + 1, cost = mod ? modCost(id) : buildCost(id, lv), ok = ore >= cost, y = 200 + i * gap, col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
       uiRects.push({ x: 30, y, w: W - 60, h: ch, act: (mod ? 'm:' : 'b:') + id });
       ctx.fillStyle = ok ? 'rgba(10,30,50,.94)' : 'rgba(10,20,30,.85)'; roundRect(30, y, W - 60, ch, 8); ctx.fill();
       ctx.strokeStyle = ok ? col : 'rgba(150,160,170,.5)'; ctx.lineWidth = 1.6; ctx.stroke();
@@ -1684,7 +1722,7 @@ function drawPlanetEnv() {
     ctx.stroke();
   }
 }
-const ENV_TXT = ['岩浆喷发', '冰冻减速', '虫群出没', '沙暴'];
+const ENV_TXT = ['岩浆喷发', '冰冻减速', '虫群出没', '沙暴', '晶刺爆发', '毒雾'];
 // 屏幕边缘箭头：目标不在屏幕里时指过去
 function edgeArrow(tx, ty, rgb) {
   const P = player, hx = P.x, hy = P.y + HIT_OY;
@@ -1717,88 +1755,225 @@ function drawPlanetHud() {
   }
   ctx.fillStyle = '#ffe6b0'; ctx.strokeText(label, W / 2, by - 5); ctx.fillText(label, W / 2, by - 5);
   // 矿石数量 + 已占领星球带来的永久加成图标
-  ctx.font = `bold 11px ${FONT}`; const os = String(Math.floor(ore)), ow = ctx.measureText(os).width, bt = planetBonusTotals(), items = [0, 1, 2, 3].filter(k => bt[k]);
+  ctx.font = `bold 11px ${FONT}`; const os = String(Math.floor(ore)), ow = ctx.measureText(os).width, bt = planetBonusTotals(), items = bt.map((v, k) => k).filter(k => bt[k]);
   let x = W / 2 - (18 + ow + items.length * 20) / 2;
   drawGlyph('ore', x + 6, by + 19, 12, '#ffd27a'); ctx.textAlign = 'left'; ctx.fillStyle = '#ffd27a'; ctx.strokeText(os, x + 15, by + 23); ctx.fillText(os, x + 15, by + 23); x += 18 + ow + 8;
   for (const k of items) { drawGlyph(PLANET_BONUS[k].gl, x + 6, by + 19, 12, `rgb(${PLANET_BONUS[k].c})`); x += 20; }
   ctx.restore();
 }
-// ================= 星图：已占领星球的长期基地（局外用矿石升级）+ 选择下一颗目标星球 =================
-let smSel = -1;
-function smPos(i) {
-  const cx = W / 2, cy = 212;
-  if (i < 6) { const a = i / 6 * TAU - Math.PI / 2; return [cx + Math.cos(a) * 82, cy + Math.sin(a) * 82]; }
-  const j = i - 6, a = j / 10 * TAU - Math.PI / 2 + .31, r = 146 + Math.floor(j / 10) * 8; return [cx + Math.cos(a) * r, cy + Math.sin(a) * r * .95];
+// ================= 星区：每个星区几颗固定的星球，全部占领后解锁下一个星区（更难、有新星球种类） =================
+const SECTORS = [
+  { name: '起源星区', kinds: [0, 1, 2, 3], diff: 0, c: '120,200,255' },
+  { name: '晶体星区', kinds: [4, 0, 1, 4, 2], diff: 1, c: '180,150,255' },
+  { name: '毒雾星区', kinds: [5, 3, 4, 5, 1], diff: 2, c: '180,255,100' },
+  { name: '深渊星区', kinds: [0, 5, 2, 4, 3, 1], diff: 3, c: '255,110,130' },
+];
+const sectorKind = (sec, slot) => SECTORS[sec].kinds[slot];
+const planetLabel = (sec, slot) => PLANET_PAL[sectorKind(sec, slot)].name + '-' + 'ABCDEFG'[sec] + (slot + 1);
+const ownedAt = (sec, slot) => save.planets.find(s => s.sec === sec && s.slot === slot);
+const sectorDoneCount = sec => save.planets.filter(s => s.sec === sec).length;
+function sectorsDone() { let n = 0; while (n < SECTORS.length && sectorDoneCount(n) >= SECTORS[n].kinds.length) n++; return n; }
+const sectorOpen = sec => sec <= sectorsDone();
+// 下一局的目标：玩家在星图里选的；没选（或已占领）就取当前星区第一颗没占领的；全部占领完返回 null（随机星球）
+function smTarget() {
+  const t = save.target;
+  if (t && SECTORS[t.sec] && t.slot < SECTORS[t.sec].kinds.length && sectorOpen(t.sec) && !ownedAt(t.sec, t.slot)) return t;
+  for (let s = 0; s < SECTORS.length && sectorOpen(s); s++) for (let j = 0; j < SECTORS[s].kinds.length; j++) if (!ownedAt(s, j)) return { sec: s, slot: j };
+  return null;
 }
-function smPlanet(x, y, r, k, sel) {
+// 旧存档里的星球（没有星区信息）按顺序放进空位
+function migratePlanets() {
+  for (const s of save.planets) {
+    if (s.sec !== undefined) continue; s.sec = -1;
+    for (let q = 0; q < SECTORS.length && s.sec < 0; q++) for (let j = 0; j < SECTORS[q].kinds.length; j++) if (!ownedAt(q, j)) { s.sec = q; s.slot = j; s.k = sectorKind(q, j); s.name = planetLabel(q, j); break; }
+  }
+}
+// ================= 星图：可拖动、双指 / 滚轮缩放 =================
+let smSel = null, smCam = { x: 0, y: 0, z: 1 }, smDrag = null;
+const smPtr = new Map(), SM_Y0 = 52, SM_Y1 = 424, SM_CY = 238;
+const secCenter = s => [s % 2 ? 70 : -70, -s * 290];
+function smNodePos(sec, slot) { const [cx, cy] = secCenter(sec), n = SECTORS[sec].kinds.length, a = -Math.PI / 2 + slot / n * TAU + (sec % 2 ? .3 : 0); return [cx + Math.cos(a) * 88, cy + Math.sin(a) * 88]; }
+const smScr = (x, y) => [W / 2 + (x - smCam.x) * smCam.z, SM_CY + (y - smCam.y) * smCam.z];
+function smOpen() { state = 'starmap'; const t = smTarget(), s = t ? t.sec : Math.min(SECTORS.length - 1, sectorsDone()); const [x, y] = secCenter(s); smCam = { x, y, z: 1 }; smSel = t ? { ...t } : null; }
+function smPlanet(x, y, r, k, a = 1) {
   const pal = PLANET_PAL[k];
-  ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, r * 3, pal.atm, sel ? .55 : .3); ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = a;
+  ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, r * 3, pal.atm, .3 * a); ctx.globalCompositeOperation = 'source-over';
   const g = ctx.createRadialGradient(x - r * .35, y - r * .35, r * .1, x, y, r); g.addColorStop(0, pal.blob[0]); g.addColorStop(.55, pal.base[1]); g.addColorStop(1, pal.base[0]);
   ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
-  if (sel) { ctx.strokeStyle = '#9fe8ff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, TAU); ctx.stroke(); }
+  ctx.globalAlpha = 1;
 }
 function drawStarMap() {
   uiRects = [];
   ctx.fillStyle = 'rgba(2,8,18,.82)'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.font = `900 24px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('星 图', W / 2, 30);
-  drawCrystals(W - 12, 30);
-  ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; drawGlyph('ore', 22, 30, 15, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(String(save.ore || 0), 34, 31); ctx.textAlign = 'center';
-  const L = save.planets, cx = W / 2, cy = 212;
-  ctx.strokeStyle = 'rgba(90,180,240,.16)'; ctx.lineWidth = 1; ctx.setLineDash([3, 6]);
-  for (const r of [82, 146]) { ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke(); }
+  ctx.font = `900 24px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('星 图', W / 2, 28);
+  drawCrystals(W - 12, 28);
+  ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; drawGlyph('ore', 22, 28, 15, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(String(save.ore || 0), 34, 29); ctx.textAlign = 'center';
+  const z = smCam.z, done = sectorsDone(), tg = smTarget();
+  // 地图区域
+  ctx.save(); ctx.beginPath(); ctx.rect(0, SM_Y0, W, SM_Y1 - SM_Y0); ctx.clip();
+  ctx.fillStyle = 'rgba(8,18,34,.6)'; ctx.fillRect(0, SM_Y0, W, SM_Y1 - SM_Y0);
+  // 航线
+  ctx.lineWidth = 2; ctx.setLineDash([6, 8]);
+  for (let s = 1; s < SECTORS.length; s++) { const [ax, ay] = smScr(...secCenter(s - 1)), [bx, by] = smScr(...secCenter(s)); ctx.strokeStyle = s <= done ? 'rgba(140,210,255,.5)' : 'rgba(120,130,150,.25)'; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); }
   ctx.setLineDash([]);
-  drawGlyph('squad', cx, cy, 28, '#9fe8ff');
-  ctx.font = `10px ${FONT}`; ctx.fillStyle = 'rgba(160,210,240,.7)'; ctx.fillText('舰队', cx, cy + 26);
-  L.forEach((s, i) => {
-    const [x, y] = smPos(i), sel = i === smSel;
-    uiRects.push({ x: x - 24, y: y - 24, w: 48, h: 48, act: 'sm:' + i });
-    smPlanet(x, y, 16, s.k % 4, sel);
-    for (let j = 0; j < (s.lv || 1); j++) { ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(x - ((s.lv || 1) - 1) * 3.5 + j * 7, y + 24, 2.2, 0, TAU); ctx.fill(); }
-  });
-  if (!L.length) { ctx.font = `13px ${FONT}`; ctx.fillStyle = 'rgba(190,220,240,.6)'; ctx.fillText('还没有占领的星球', cx, cy + 60); }
-  // 选中星球的基地
-  panel(12, 380, W - 24, 112, .86);
-  const s = L[smSel];
-  if (s) {
-    const k = s.k % 4, pb = PLANET_BONUS[k], inc = baseIncome(s), lv = s.lv || 1, cost = baseUpCost(lv), can = lv < BASE_MAX && (save.ore || 0) >= cost;
-    smPlanet(44, 412, 14, k, false);
-    ctx.textAlign = 'left'; ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = `rgb(${PLANET_PAL[k].atm})`; ctx.fillText(s.name, 68, 404);
-    ctx.font = `12px ${FONT}`; ctx.fillStyle = '#ffd23f'; ctx.fillText(`基地 Lv${lv}/${BASE_MAX}`, 68, 424);
-    drawGlyph(pb.gl, 32, 452, 14, `rgb(${pb.c})`); ctx.font = `13px ${FONT}`; ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText(pb.t(planetBonusOf(s)), 46, 453);
-    ctx.fillStyle = '#cfe2f0'; ctx.fillText(`每局产出`, 26, 476); drawGlyph('ore', 92, 475, 12, '#ffd27a'); ctx.fillStyle = '#ffd27a'; ctx.fillText(String(inc.ore), 102, 476); gem(140, 475, 6); ctx.fillStyle = '#bff4ff'; ctx.fillText(String(inc.cr), 150, 476);
-    ctx.textAlign = 'center';
-    if (lv < BASE_MAX) uiBtn(W - 142, 432, 118, 44, `升级 ${cost}`, 'smup', { fill: can ? 'rgba(30,110,170,.9)' : 'rgba(40,50,60,.8)', stroke: can ? '#9fe8ff' : 'rgba(150,160,170,.5)' });
-    else { ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#ffd23f'; ctx.fillText('已满级', W - 83, 454); }
-    if (lv < BASE_MAX) drawGlyph('ore', W - 120, 455, 12, can ? '#ffd27a' : '#998866');
-  } else { ctx.font = `13px ${FONT}`; ctx.fillStyle = 'rgba(190,220,240,.6)'; ctx.fillText(L.length ? '点击星球查看基地' : '占领星球后在这里升级基地', W / 2, 436); }
-  // 下一颗目标星球
-  const nk = save.nextKind != null ? save.nextKind % 4 : L.length % 4;
-  ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText('下一个目标', W / 2, 512);
-  for (let k = 0; k < 4; k++) {
-    const w = (W - 24 - 18) / 4, x = 12 + k * (w + 6), y = 524, on = k === nk;
-    uiRects.push({ x, y, w, h: 70, act: 'smk:' + k });
-    ctx.fillStyle = on ? 'rgba(40,110,170,.5)' : 'rgba(12,24,40,.8)'; roundRect(x, y, w, 70, 7); ctx.fill();
-    ctx.strokeStyle = on ? '#9fe8ff' : 'rgba(80,170,230,.3)'; ctx.lineWidth = on ? 1.8 : 1; ctx.stroke();
-    smPlanet(x + w / 2, y + 22, 11, k, false);
-    ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = on ? '#fff' : '#b9d6ea'; ctx.fillText(PLANET_PAL[k].name, x + w / 2, y + 46);
-    drawGlyph(PLANET_BONUS[k].gl, x + w / 2 - 22, y + 60, 10, `rgb(${PLANET_BONUS[k].c})`); ctx.font = `10px ${FONT}`; ctx.fillStyle = 'rgba(200,220,240,.7)'; ctx.fillText(ENV_TXT[k], x + w / 2 + 6, y + 61);
+  for (let s = 0; s < SECTORS.length; s++) {
+    const S = SECTORS[s], open = s <= done, [cx, cy] = smScr(...secCenter(s)), R = 128 * z;
+    if (cy + R < SM_Y0 - 40 || cy - R > SM_Y1 + 40) continue;
+    ctx.fillStyle = `rgba(${S.c},${open ? .06 : .02})`; ctx.strokeStyle = `rgba(${S.c},${open ? .35 : .12})`; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.font = `bold ${Math.round(13 * Math.min(1.3, z))}px ${FONT}`; ctx.fillStyle = open ? `rgb(${S.c})` : 'rgba(150,160,180,.5)';
+    ctx.fillText(S.name + (open ? `  ${sectorDoneCount(s)}/${S.kinds.length}` : ''), cx, cy - R - 10 * z);
+    for (let j = 0; j < S.kinds.length; j++) {
+      const [x, y] = smScr(...smNodePos(s, j)), k = S.kinds[j], o = ownedAt(s, j), r = 15 * z, sel = smSel && smSel.sec === s && smSel.slot === j;
+      if (!open) { ctx.fillStyle = 'rgba(40,46,60,.9)'; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); continue; }
+      smPlanet(x, y, r, k, o ? 1 : .45);
+      if (o) for (let q = 0; q < (o.lv || 1); q++) { ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(x - ((o.lv || 1) - 1) * 3.5 + q * 7, y + r + 8, 2.2, 0, TAU); ctx.fill(); }
+      else { ctx.save(); ctx.setLineDash([3, 4]); ctx.strokeStyle = `rgba(${PLANET_PAL[k].atm},.7)`; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x, y, r + 3, 0, TAU); ctx.stroke(); ctx.restore(); }
+      if (tg && tg.sec === s && tg.slot === j) { ctx.strokeStyle = `rgba(255,215,90,${.6 + .4 * Math.sin(time * 5)})`; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(x, y, r + 7, 0, TAU); ctx.stroke(); ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = '#ffd77a'; ctx.fillText('目标', x, y - r - 12); }
+      if (sel) { ctx.strokeStyle = '#9fe8ff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 11, 0, TAU); ctx.stroke(); }
+    }
+    if (!open) { drawGlyph('plate', cx, cy, 26 * z, 'rgba(160,170,190,.6)'); ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(170,180,200,.7)'; ctx.fillText('占领上一星区全部星球后解锁', cx, cy + 30 * z); }
   }
+  const beyond = save.planets.filter(s => s.sec < 0).length;
+  if (beyond) { ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(200,220,240,.7)'; ctx.fillText(`边境星球 ${beyond} 颗`, W / 2, SM_Y1 - 12); }
+  ctx.restore();
+  uiBtn(W - 76, SM_Y1 - 38, 30, 28, '−', 'smz-', { fs: 16 }); uiBtn(W - 42, SM_Y1 - 38, 30, 28, '+', 'smz+', { fs: 16 });
+  // 选中星球的信息
+  panel(12, 432, W - 24, 124, .88);
+  const sl = smSel && SECTORS[smSel.sec] ? smSel : null;
+  if (sl) {
+    const k = sectorKind(sl.sec, sl.slot), o = ownedAt(sl.sec, sl.slot), open = sectorOpen(sl.sec), pb = PLANET_BONUS[k], pal = PLANET_PAL[k];
+    smPlanet(44, 466, 16, k, open ? 1 : .4);
+    ctx.textAlign = 'left'; ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = `rgb(${pal.atm})`; ctx.fillText(planetLabel(sl.sec, sl.slot), 70, 458);
+    ctx.font = `12px ${FONT}`; ctx.fillStyle = '#ffd23f';
+    if (o) {
+      const lv = o.lv || 1, inc = baseIncome(o), cost = baseUpCost(lv), can = lv < BASE_MAX && (save.ore || 0) >= cost;
+      ctx.fillText(`基地 Lv${lv}/${BASE_MAX}`, 70, 478);
+      drawGlyph(pb.gl, 32, 506, 14, `rgb(${pb.c})`); ctx.font = `13px ${FONT}`; ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText(pb.t(planetBonusOf(o)), 46, 507);
+      ctx.fillStyle = '#cfe2f0'; ctx.fillText('每局产出', 26, 534); drawGlyph('ore', 92, 533, 12, '#ffd27a'); ctx.fillStyle = '#ffd27a'; ctx.fillText(String(inc.ore), 102, 534); gem(140, 533, 6); ctx.fillStyle = '#bff4ff'; ctx.fillText(String(inc.cr), 150, 534);
+      ctx.textAlign = 'center';
+      if (lv < BASE_MAX) { uiBtn(W - 142, 486, 118, 44, `升级 ${cost}`, 'smup', { fill: can ? 'rgba(30,110,170,.9)' : 'rgba(40,50,60,.8)', stroke: can ? '#9fe8ff' : 'rgba(150,160,170,.5)' }); drawGlyph('ore', W - 120, 509, 12, can ? '#ffd27a' : '#998866'); }
+      else { ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#ffd23f'; ctx.fillText('已满级', W - 83, 508); }
+    } else {
+      ctx.fillText('难度 ' + '★'.repeat(SECTORS[sl.sec].diff + 1), 70, 478);
+      ctx.font = `13px ${FONT}`; ctx.fillStyle = `rgb(${pal.atm})`; ctx.fillText('环境：' + ENV_TXT[k], 26, 506);
+      drawGlyph(pb.gl, 32, 532, 14, `rgb(${pb.c})`); ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText('占领后 ' + pb.t(PLANET_BONUS_BASE[k] * (k === 1 ? 1 : 1)), 46, 533);
+      ctx.textAlign = 'center'; ctx.font = `bold 13px ${FONT}`;
+      if (!open) { ctx.fillStyle = 'rgba(190,200,215,.7)'; ctx.fillText('未解锁', W - 83, 508); }
+      else if (tg && tg.sec === sl.sec && tg.slot === sl.slot) { ctx.fillStyle = '#ffd77a'; ctx.fillText('下一局目标', W - 83, 508); }
+    }
+  } else { ctx.font = `13px ${FONT}`; ctx.fillStyle = 'rgba(190,220,240,.6)'; ctx.fillText('点击星球查看 · 拖动地图 · 双指缩放', W / 2, 494); }
+  ctx.textAlign = 'center';
   const lh = save.lastHarvest;
-  if (lh && (lh.ore || lh.cr || lh.left)) { ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.7)'; ctx.fillText(`上一局：星球产出 矿石 ${lh.ore} · 星晶 ${lh.cr}，带回矿石 ${lh.left}`, W / 2, 614); }
-  uiBtn(12, H - 58, 110, 40, '返回 [Esc]', 'back');
-  uiBtn(132, H - 58, W - 144, 40, '出击 · 生存模式 [Enter]', 'surv', { fill: 'rgba(15,95,75,.9)', stroke: '#8fffd0', fs: 14 });
+  if (lh && (lh.ore || lh.cr || lh.left)) { ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.7)'; ctx.fillText(`上一局：星球产出 矿石 ${lh.ore} · 星晶 ${lh.cr}，带回矿石 ${lh.left}`, W / 2, 574); }
+  uiBtn(12, H - 104, (W - 30) / 2, 40, '科技 [T]', 'tech', { fill: 'rgba(60,40,110,.9)', stroke: '#c8a8ff' });
+  uiBtn(18 + (W - 30) / 2, H - 104, (W - 30) / 2, 40, '返回 [Esc]', 'back');
+  uiBtn(12, H - 56, W - 24, 42, '出击 · 生存模式 [Enter]', 'surv', { fill: 'rgba(15,95,75,.9)', stroke: '#8fffd0', fs: 15 });
 }
+function smZoom(f) { smCam.z = Math.min(2.2, Math.max(.45, smCam.z * f)); }
 function smAct(a) {
   if (!a) return;
   if (a === 'back') state = 'title';
   else if (a === 'surv') startSurvival();
-  else if (a.startsWith('sm:')) { smSel = +a.slice(3); tone(660, .05, 'square', .04); }
-  else if (a.startsWith('smk:')) { save.nextKind = +a.slice(4); persist(); tone(700, .05, 'square', .04); }
+  else if (a === 'tech') { state = 'tech'; techSel = null; }
+  else if (a === 'smz-') smZoom(1 / 1.25);
+  else if (a === 'smz+') smZoom(1.25);
   else if (a === 'smup') {
-    const s = save.planets[smSel]; if (!s) return; const lv = s.lv || 1, cost = baseUpCost(lv);
+    const s = smSel && ownedAt(smSel.sec, smSel.slot); if (!s) return; const lv = s.lv || 1, cost = baseUpCost(lv);
     if (lv >= BASE_MAX || (save.ore || 0) < cost) { tone(150, .12, 'square', .04); return; }
     save.ore -= cost; s.lv = lv + 1; persist(); sfxPick();
+  }
+}
+// 点地图：选星球（没占领的直接设为下一局目标）
+function smTap(p) {
+  for (let s = 0; s < SECTORS.length; s++) for (let j = 0; j < SECTORS[s].kinds.length; j++) {
+    const [x, y] = smScr(...smNodePos(s, j)); if (Math.hypot(p.x - x, p.y - y) > Math.max(20, 22 * smCam.z)) continue;
+    smSel = { sec: s, slot: j }; tone(660, .05, 'square', .04);
+    if (sectorOpen(s) && !ownedAt(s, j)) { save.target = { sec: s, slot: j }; persist(); }
+    return;
+  }
+}
+function smDown(p, e) {
+  const a = uiHit(p); if (a) { smAct(a); return; }
+  if (p.y < SM_Y0 || p.y > SM_Y1) return;
+  smPtr.set(e.pointerId, p); try { cv.setPointerCapture(e.pointerId); } catch (_) { }
+  if (smPtr.size === 1) smDrag = { x: p.x, y: p.y, cx: smCam.x, cy: smCam.y, moved: false };
+  else { const [q1, q2] = [...smPtr.values()]; smDrag = { pinch: Math.hypot(q1.x - q2.x, q1.y - q2.y) || 1, z: smCam.z, moved: true }; }
+}
+function smMove(p, e) {
+  if (!smPtr.has(e.pointerId) || !smDrag) return; smPtr.set(e.pointerId, p);
+  if (smPtr.size >= 2 && smDrag.pinch) { const [q1, q2] = [...smPtr.values()]; smCam.z = Math.min(2.2, Math.max(.45, smDrag.z * Math.hypot(q1.x - q2.x, q1.y - q2.y) / smDrag.pinch)); return; }
+  if (smDrag.pinch) return;
+  const dx = p.x - smDrag.x, dy = p.y - smDrag.y; if (Math.abs(dx) + Math.abs(dy) > 6) smDrag.moved = true;
+  smCam.x = smDrag.cx - dx / smCam.z; smCam.y = smDrag.cy - dy / smCam.z;
+}
+function smUp(p, e) {
+  if (!smPtr.has(e.pointerId)) return;
+  if (smDrag && !smDrag.moved && smPtr.size === 1) smTap(p);
+  smPtr.delete(e.pointerId); if (!smPtr.size) smDrag = null;
+}
+// ================= 科技树：用矿石研究永久升级，三条线各 4 级，必须按顺序研究 =================
+const TECH_BR = [{ n: '火力', c: '255,130,90' }, { n: '生存', c: '120,200,255' }, { n: '基地', c: '255,210,110' }];
+const TECH = [
+  { id: 'f1', br: 0, t: 0, name: '强化弹药', gl: 'sword', cost: 40, desc: '伤害 +10%', apply: P => { P.s.dmgMul *= 1.1; } },
+  { id: 'f2', br: 0, t: 1, name: '快速装填', gl: 'gauge', cost: 80, desc: '攻速 +8%', apply: P => { P.s.aspd = (P.s.aspd || 0) + .08; } },
+  { id: 'f3', br: 0, t: 2, name: '预装主炮', gl: 'power', cost: 140, desc: '开局主炮 Lv2', apply: P => { P.lv = P.lastLv = Math.max(P.lv, 2); } },
+  { id: 'f4', br: 0, t: 3, name: '副武器挂架', gl: 's_missile', cost: 220, desc: '开局随机带一种副武器', apply: P => { const pool = SUB_IDS.filter(id => !subOf(P, id)); if (pool.length && P.subs.length < SUB_MAX) subAdd(P, pool[Math.random() * pool.length | 0], 1); } },
+  { id: 's1', br: 1, t: 0, name: '复合装甲', gl: 'plate', cost: 40, desc: '护甲上限 +1', apply: P => { P.maxArmor++; P.armor++; } },
+  { id: 's2', br: 1, t: 1, name: '开局护盾', gl: 'bubble', cost: 80, desc: '开局带 1 层护盾', apply: P => { P.s.shieldMax++; P.s.shield++; } },
+  { id: 's3', br: 1, t: 2, name: '磁力核心', gl: 'magnet', cost: 140, desc: '吸附范围扩大', apply: P => { P.s.pull = (P.s.pull || 0) + SURV_PULL; } },
+  { id: 's4', br: 1, t: 3, name: '战术刷新', gl: 'slashes', cost: 220, desc: '升级卡刷新次数 +2', apply: P => { P.rerolls += 2; } },
+  { id: 'b1', br: 2, t: 0, name: '精炼技术', gl: 'ore', cost: 40, desc: '矿石 +25%', apply: () => { oreMul *= 1.25; } },
+  { id: 'b2', br: 2, t: 1, name: '预制建材', gl: 'wrench', cost: 80, desc: '建筑造价八折', apply: () => { } },
+  { id: 'b3', br: 2, t: 2, name: '矿脉探测', gl: 'crosshair', cost: 140, desc: '开局显示全部矿脉', apply: () => { for (const p of planets) for (const v of p.veins) v.found = true; } },
+  { id: 'b4', br: 2, t: 3, name: '轨道补给', gl: 'turret', cost: 220, desc: '进入轨道时自带一座炮塔', apply: () => { } },
+];
+const techHas = id => !!(save.tech && save.tech[id]);
+const techReady = d => d.t === 0 || techHas(TECH.find(o => o.br === d.br && o.t === d.t - 1).id);
+function techApply(P) { for (const d of TECH) if (techHas(d.id)) d.apply(P); }
+let techSel = null;
+function drawTech() {
+  uiRects = [];
+  ctx.fillStyle = 'rgba(4,6,20,.86)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = `900 24px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('科 技', W / 2, 28);
+  ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; drawGlyph('ore', 22, 28, 15, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(String(save.ore || 0), 34, 29); ctx.textAlign = 'center';
+  const colX = b => W * (b * 2 + 1) / 6, rowY = t => 128 + t * 100;
+  TECH_BR.forEach((B, b) => { ctx.font = `bold 14px ${FONT}`; ctx.fillStyle = `rgb(${B.c})`; ctx.fillText(B.n, colX(b), 72); });
+  for (const d of TECH) if (d.t > 0) { const on = techHas(d.id), x = colX(d.br); ctx.strokeStyle = on ? `rgba(${TECH_BR[d.br].c},.8)` : 'rgba(120,130,150,.3)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x, rowY(d.t - 1) + 30); ctx.lineTo(x, rowY(d.t) - 30); ctx.stroke(); }
+  for (const d of TECH) {
+    const x = colX(d.br), y = rowY(d.t), on = techHas(d.id), ready = techReady(d), c = TECH_BR[d.br].c, sel = techSel === d.id;
+    uiRects.push({ x: x - 34, y: y - 34, w: 68, h: 80, act: 'tn:' + d.id });
+    if (on) { ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, 70, c, .4); ctx.globalCompositeOperation = 'source-over'; }
+    ctx.fillStyle = on ? `rgba(${c},.25)` : 'rgba(12,20,36,.95)'; ctx.beginPath(); ctx.arc(x, y, 28, 0, TAU); ctx.fill();
+    ctx.strokeStyle = on ? `rgb(${c})` : ready ? `rgba(${c},.8)` : 'rgba(120,130,150,.35)'; ctx.lineWidth = sel ? 3 : 1.8; if (!on && ready) ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
+    drawGlyph(d.gl, x, y, 26, on ? '#fff' : ready ? `rgb(${c})` : 'rgb(90,100,120)');
+    ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = on ? '#fff' : ready ? '#cfe2f0' : 'rgba(140,150,170,.6)'; ctx.fillText(d.name, x, y + 41);
+  }
+  panel(12, 520, W - 24, 92, .9);
+  const d = TECH.find(o => o.id === techSel);
+  if (d) {
+    const on = techHas(d.id), ready = techReady(d), can = !on && ready && (save.ore || 0) >= d.cost, c = TECH_BR[d.br].c;
+    drawGlyph(d.gl, 46, 566, 28, `rgb(${c})`);
+    ctx.textAlign = 'left'; ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(d.name, 76, 552);
+    ctx.font = `13px ${FONT}`; ctx.fillStyle = `rgb(${c})`; ctx.fillText(d.desc, 76, 578);
+    ctx.textAlign = 'center';
+    if (on) { ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#9fe8ff'; ctx.fillText('已研究', W - 80, 566); }
+    else if (!ready) { ctx.font = `12px ${FONT}`; ctx.fillStyle = 'rgba(190,200,215,.7)'; ctx.fillText('先研究上一级', W - 80, 566); }
+    else { uiBtn(W - 138, 544, 112, 44, `研究 ${d.cost}`, 'tbuy', { fill: can ? 'rgba(30,110,170,.9)' : 'rgba(40,50,60,.8)', stroke: can ? '#9fe8ff' : 'rgba(150,160,170,.5)' }); drawGlyph('ore', W - 118, 567, 12, can ? '#ffd27a' : '#998866'); }
+  } else { ctx.font = `13px ${FONT}`; ctx.fillStyle = 'rgba(190,220,240,.6)'; ctx.fillText('点击科技查看', W / 2, 566); }
+  uiBtn(12, H - 56, W - 24, 42, '返回星图 [Esc]', 'tback');
+}
+function techAct(a) {
+  if (!a) return;
+  if (a === 'tback') { state = 'starmap'; return; }
+  if (a.startsWith('tn:')) { techSel = a.slice(3); tone(660, .05, 'square', .04); return; }
+  if (a === 'tbuy') {
+    const d = TECH.find(o => o.id === techSel); if (!d || techHas(d.id) || !techReady(d)) return;
+    if ((save.ore || 0) < d.cost) { tone(150, .12, 'square', .04); return; }
+    save.ore -= d.cost; save.tech = save.tech || {}; save.tech[d.id] = true; persist(); sfxPick();
   }
 }
 function survSpawn(type, a, elite) {
@@ -1807,7 +1982,7 @@ function survSpawn(type, a, elite) {
   spawnEnemy(type, player.x + Math.cos(a) * R, player.y + Math.sin(a) * R, { vx: 0, vy: 0 });
   // 敌人血量随存活时间成长：每 200 秒 +100%（开局火力弱，成长太快会形成"杀不动 → 没经验 → 拿不到卡"的死循环）
   const e = enemies[enemies.length - 1], k = (1 + survT / SURV_HP_T) * (elite ? 1.6 : 1);
-  e.hp *= k; e.maxHp *= k; e.fireT = rnd(1.2, 2.6);
+  e.hp *= k * runHpK; e.maxHp *= k * runHpK; e.fireT = rnd(1.2, 2.6);   // runHpK：目标星区越靠后敌人越硬
   // 精英个体：1 分钟后偶尔出现，体型 1.35 倍、血量 3 倍、更快，带金色光环，掉落更好
   if (!elite && survT > 60 && Math.random() < SURV_CHAMP) { e.champ = true; e.r *= 1.35; e.hp *= 3; e.maxHp *= 3; }
   if (!BUG_ART.defs[type] && survT > 60) e.pal = [null, 'rust', 'navy', 'void'][Math.floor(survT / 60) % 4];
@@ -1895,6 +2070,9 @@ function survFxUpdate(dt) {
     } else if (f.k === 'shell') {
       f.t += dt;
       if (f.t >= f.delay) { f.dead = true; explosion(f.x, f.y, 30); shake = Math.max(shake, 4); noise(.3, .15, 600); if (!player.dead && Math.hypot(h.x - f.x, h.y - f.y) < f.r) hurtPlayer(); }
+    } else if (f.k === 'gas') {
+      f.t += dt; if (f.t > f.life) { f.dead = true; continue; }
+      if (!player.dead && f.t > .8 && Math.hypot(h.x - f.x, h.y - f.y) < f.r) { if ((f.tick -= dt) <= 0) { f.tick = 1.5; hurtPlayer(); } } else f.tick = Math.max(f.tick, .3);
     } else if (f.k === 'wave') {
       f.r += f.spd * dt;
       if (!f.hit && !player.dead && Math.abs(Math.hypot(h.x - f.x, h.y - f.y) - f.r) < 10) { f.hit = true; hurtPlayer(); }
@@ -1934,6 +2112,13 @@ function drawSurvFx() {
       ctx.fillStyle = `rgba(255,60,40,${.08 + .22 * k})`; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * k, 0, TAU); ctx.fill();
       ctx.strokeStyle = `rgba(255,90,60,${.5 + .4 * Math.sin(time * 20)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, TAU); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(f.x - 8, f.y); ctx.lineTo(f.x + 8, f.y); ctx.moveTo(f.x, f.y - 8); ctx.lineTo(f.x, f.y + 8); ctx.stroke();
+      ctx.globalCompositeOperation = 'lighter';
+    } else if (f.k === 'gas') {
+      const a = Math.min(1, f.t / .8) * Math.min(1, (f.life - f.t) / .8);
+      ctx.globalCompositeOperation = 'source-over';
+      const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r); g.addColorStop(0, `rgba(170,230,60,${.38 * a})`); g.addColorStop(.75, `rgba(120,190,30,${.26 * a})`); g.addColorStop(1, 'rgba(120,190,30,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, TAU); ctx.fill();
+      if (f.t < .8) { ctx.strokeStyle = `rgba(200,255,90,${.6 + .3 * Math.sin(time * 18)})`; ctx.lineWidth = 2; ctx.setLineDash([6, 5]); ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, TAU); ctx.stroke(); ctx.setLineDash([]); }
       ctx.globalCompositeOperation = 'lighter';
     } else if (f.k === 'wave') {
       const a = 1 - f.r / f.max;
@@ -2150,8 +2335,9 @@ addEventListener('keydown', e => {
   if ((state === 'title' || state === 'over') && e.code === 'KeyH') { state = 'hangar'; hangarPick = null; return; }
   if ((state === 'title' || state === 'over') && e.code === 'KeyJ') { state = 'gacha'; return; }
   if (state === 'over' && e.code === 'Escape') { state = 'title'; return; }
-  if (state === 'starmap') { if (e.code === 'Escape' || e.code === 'KeyS') state = 'title'; else if (e.code === 'Enter') startSurvival(); return; }
-  if (state === 'title' && e.code === 'KeyS') { state = 'starmap'; smSel = -1; return; }
+  if (state === 'tech') { if (e.code === 'Escape' || e.code === 'KeyT') state = 'starmap'; return; }
+  if (state === 'starmap') { if (e.code === 'Escape' || e.code === 'KeyS') state = 'title'; else if (e.code === 'Enter') startSurvival(); else if (e.code === 'KeyT') { state = 'tech'; techSel = null; } else if (e.code === 'Equal') smZoom(1.25); else if (e.code === 'Minus') smZoom(1 / 1.25); return; }
+  if (state === 'title' && e.code === 'KeyS') { smOpen(); return; }
   if (state === 'build') { const k = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8'].indexOf(e.code), ids = buildIds(); if (k >= 0 && ids[k]) buildAct((buildCtx.pad.b === 'mod' ? 'm:' : 'b:') + ids[k]); if (e.code === 'Escape' || e.code === 'KeyB') closeBuild(); return; }
   if (state === 'paused' && e.code === 'KeyQ') { quitRun(); return; }
   if (e.code === 'Space' && state === 'play') useBomb();
@@ -2177,7 +2363,8 @@ cv.addEventListener('pointerdown', e => {
   // GM 面板只用 G 键呼出（右下角按钮已去掉）
   if (state === 'codex') { codexClick(p); return; }
   if (state === 'hangar') { hangarAct(uiHit(p)); return; }
-  if (state === 'starmap') { smAct(uiHit(p)); return; }
+  if (state === 'starmap') { smDown(p, e); return; }
+  if (state === 'tech') { techAct(uiHit(p)); return; }
   if (state === 'gacha') { gachaAct(uiHit(p)); return; }
   if (state === 'title' || state === 'over') { const a = uiHit(p); if (a) { titleAct(a); return; } }
   if (state === 'title' || state === 'over') { if (state === 'title') startGame(); else if (phaseT > (capRes ? 2.3 : 0.8)) restartRun(); return; }
@@ -2195,7 +2382,10 @@ cv.addEventListener('pointerdown', e => {
     try { cv.setPointerCapture(e.pointerId); } catch (_) { }
   }
 });
+cv.addEventListener('wheel', e => { if (state === 'starmap') { e.preventDefault(); smZoom(Math.exp(-e.deltaY * .0015)); } }, { passive: false });
+cv.addEventListener('pointercancel', e => { smPtr.delete(e.pointerId); if (!smPtr.size) smDrag = null; });
 cv.addEventListener('pointermove', e => {
+  if (state === 'starmap') { smMove(toLocal(e), e); return; }
   if (state !== 'play' || !player) return;
   const p = toLocal(e);
   if (e.pointerType === 'mouse') { if (!SURV) { player.tx = p.x; player.ty = p.y; player.useTarget = true; } }
@@ -2206,7 +2396,7 @@ cv.addEventListener('pointermove', e => {
   }
   else if (drag) { player.tx = p.x + drag.ox; player.ty = p.y + drag.oy; player.useTarget = true; }
 });
-cv.addEventListener('pointerup', () => { drag = null; if (player) player.joy = null; });
+cv.addEventListener('pointerup', e => { if (state === 'starmap') smUp(toLocal(e), e); drag = null; if (player) player.joy = null; });
 cv.addEventListener('pointercancel', () => { drag = null; if (player) player.joy = null; });
 
 // ================= 特效 =================
@@ -3566,7 +3756,9 @@ let save = (() => { try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); 
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { } }
 curSkin = save.fighters[save.load.fighter] ? save.load.fighter : 'silver';
 if (!Array.isArray(save.planets)) save.planets = [];
-if (typeof save.ore !== 'number') save.ore = 0;   // 局外矿石仓库（升级星球基地）   // 已占领的星球（每颗给之后的生存模式永久加成）
+if (typeof save.ore !== 'number') save.ore = 0;
+if (!save.tech) save.tech = {};   // 已研究的科技
+migratePlanets();   // 局外矿石仓库（升级星球基地）   // 已占领的星球（每颗给之后的生存模式永久加成）
 const ownedFighters = () => SKIN_IDS.filter(id => save.fighters[id]);
 const gearStar = k => save.gear[k] || 1;
 const starStr = n => '★'.repeat(n) + '☆'.repeat(5 - n);
@@ -4155,7 +4347,7 @@ function titleAct(a) {
   else if (a === 'home') state = 'title';
   else if (a === 'restart') restartRun();
   else if (a === 'surv') startSurvival();
-  else if (a === 'starmap') { state = 'starmap'; smSel = -1; }
+  else if (a === 'starmap') smOpen();
   // （星球玩法已并入生存模式）
 }
 function gmMeta(a) {
@@ -6287,6 +6479,7 @@ function render() {
   if (state === 'codex') { ctx.restore(); drawCodex(); return; }
   if (state === 'hangar') { ctx.restore(); drawHangar(); return; }
   if (state === 'starmap') { ctx.restore(); drawStarMap(); return; }
+  if (state === 'tech') { ctx.restore(); drawTech(); return; }
   if (state === 'gacha') { ctx.restore(); drawGacha(); return; }
 
   if (PLANET) drawPlanets();
@@ -6931,7 +7124,7 @@ function drawPaused() {
 }
 // 占领结算：星球缩略图、三颗星（占领 / 无伤 / 速攻）、数据、永久加成、星晶
 function drawCapRes() {
-  const r = capRes, p = r.p, t = phaseT, kk = p.kind % 4, pb = PLANET_BONUS[kk], cnt = planetBonusTotals()[kk];
+  const r = capRes, p = r.p, t = phaseT, kk = p.kind % 4, pb = PLANET_BONUS[p.kind], cnt = planetBonusTotals()[p.kind];
   ctx.fillStyle = 'rgba(0,10,24,.84)'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const pop = Math.min(1, t * 2.5), cy = 128, rr = 58 * (.6 + .4 * pop), k = rr / p.R;
@@ -6939,6 +7132,7 @@ function drawCapRes() {
   ctx.globalAlpha = pop; ctx.drawImage(p.cv, W / 2 - p.half * k, cy - p.half * k, p.half * 2 * k, p.half * 2 * k); ctx.globalAlpha = 1;
   ctx.shadowColor = '#ffcf5a'; ctx.shadowBlur = 18; ctx.font = `900 40px ${FONT}`; ctx.fillStyle = '#ffe08a'; ctx.fillText('占领成功', W / 2, 226); ctx.shadowBlur = 0;
   ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = '#bff4ff'; ctx.fillText(p.name, W / 2, 260);
+  if (r.unlock && t > 1) { const k = Math.min(1, (t - 1) * 3); ctx.globalAlpha = k; ctx.fillStyle = 'rgba(60,40,0,.85)'; roundRect(W / 2 - 120, 24, 240, 36, 8); ctx.fill(); ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#ffe08a'; ctx.fillText('解锁新星区 · ' + r.unlock, W / 2, 43); ctx.globalAlpha = 1; }
   r.stars.forEach((s, i) => {
     const x = W / 2 + (i - 1) * 100, y = 310, st = Math.max(0, Math.min(1, (t - .5 - i * .35) * 4));
     if (st > 0 && !s.snd) { s.snd = true; if (s.ok) tone(660 + i * 220, .18, 'triangle', .07); }
@@ -7185,7 +7379,7 @@ function frame(now) {
     let rem = dt * gm.speed;
     while (rem > 1e-4 && state === 'play') { const s = Math.min(rem, 1 / 60); update(s); rem -= s; }
   }
-  else if (state === 'title' || state === 'starmap' || state === 'codex' || state === 'hangar' || state === 'gacha') { time += dt; bgUpdate(dt); gachaT += dt; if (gachaMsgT > 0) gachaMsgT -= dt; }
+  else if (state === 'title' || state === 'starmap' || state === 'tech' || state === 'codex' || state === 'hangar' || state === 'gacha') { time += dt; bgUpdate(dt); gachaT += dt; if (gachaMsgT > 0) gachaMsgT -= dt; }
   else if (state === 'choose' || state === 'build') time += dt;
   else if (state === 'over') { time += dt; phaseT += dt; bgUpdate(dt * .5); updateParts(dt); }
   bgmUpdate();
