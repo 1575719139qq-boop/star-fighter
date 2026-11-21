@@ -1374,7 +1374,7 @@ function foeHit(f, d) {
   if (f.hp <= 0) return;
   const p = f.p, x = p.x + f.dx, y = p.y + f.dy;
   if (f.type === 'core' && gensAlive(p)) { if (Math.random() < .3) hitSpark(x + rnd(-20, 20), y + rnd(-20, 20), '190,120,255'); return; }   // 护盾没破，核心不掉血
-  f.hp -= d * (1 + .2 * beaconLv(p)); f.flash = .08;
+  f.hp -= d * (1 + .2 * beaconLv(p)) / DIFF_K; f.flash = .08;
   if (f.hp <= 0) foeDie(f);
 }
 function foeDie(f) {
@@ -3203,7 +3203,9 @@ function updateEnemies(dt) {
   enemies = enemies.filter(e => e.hp > 0 && (SURV ? (e.x - player.x) ** 2 + (e.y - player.y) ** 2 < 1000 * 1000 : e.y < H + 60 && e.x > -300 && e.x < W + 300));
 }
 // 前五级伤害加成：Lv1 +50%，每升一级少 10%，Lv6 起没有
-const earlyK = () => player && player.plevel < 6 ? 1 + .1 * (6 - player.plevel) : 1;
+// 整体难度：所有敌人、首领、星球据点的有效血量 ×DIFF_K（2026-11-21 应要求 +10%）
+const DIFF_K = 1.1;
+const earlyK = () => (player && player.plevel < 6 ? 1 + .1 * (6 - player.plevel) : 1) / DIFF_K;
 function damageEnemy(e, d) {
   if (e.hp <= 0) return;
   d *= earlyK();
