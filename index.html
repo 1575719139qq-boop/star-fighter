@@ -1143,13 +1143,20 @@ function survFrame(fn) {
   if (P.rail && P.rail !== rail) { R(P.rail, 'x', 'y0', sn); P.rail.ang = a; }
 }
 // 刷怪：从屏幕外一圈涌来；时间越长种类越多、越密、越硬，定时刷精英；偶尔有陨石横穿
-// 生存模式按波次刷怪：一波刷 22 秒左右（越往后越长，最多 32 秒），然后停 7 秒喘口气，再来下一波
-const SURV_WAVE_ON = n => Math.min(32, 21 + n), SURV_WAVE_OFF = 7;
+// 生存模式一共 20 波：每波刷 17–26 秒（越往后越长），然后停 6 秒喘口气。
+// 通关条件：打掉星球核心（占领），然后守住指挥中心直到第 20 波结束；没占领就过了 20 波会进入加时，直到占领后再守 3 波
+const SURV_WAVES = 20, SURV_WAVE_ON = n => Math.min(26, 16 + n), SURV_WAVE_OFF = 6;
 let survWave = { n: 1, on: true, t: SURV_WAVE_ON(1) };
+const survWaveGoal = () => { const t = planetTarget(); return t && t.def ? t.def.winWave : SURV_WAVES; };
 function survWaveStep(dt) {
   const w = survWave;
   if ((w.t -= dt) > 0) return;
-  if (w.on) { w.on = false; w.t = SURV_WAVE_OFF; floatText(W / 2, 96, `第 ${w.n} 波结束`, 16, '#9fe8ff', 1.6); tone(523, .15, 'triangle', .05); tone(784, .2, 'triangle', .05, 0, .12); }
+  if (w.on) {
+    const t = planetTarget();
+    if (t && t.def && w.n >= t.def.winWave) { defenseWon(t); return; }   // 守住了，通关
+    w.on = false; w.t = SURV_WAVE_OFF; floatText(W / 2, 96, `第 ${w.n} 波结束`, 16, '#9fe8ff', 1.6); tone(523, .15, 'triangle', .05); tone(784, .2, 'triangle', .05, 0, .12);
+    if (w.n >= SURV_WAVES && !(t && t.def)) floatText(W / 2, 118, '加时 · 尽快打掉星球核心', 14, '#ff9a7a', 2.2);
+  }
   else { w.n++; w.on = true; w.t = SURV_WAVE_ON(w.n); floatText(W / 2, 96, `第 ${w.n} 波`, 20, '#ffd28a', 1.8); tone(330, .2, 'sawtooth', .04); tone(440, .25, 'sawtooth', .04, 0, .15); }
 }
 function survUpdate(dt) {
@@ -1159,7 +1166,9 @@ function survUpdate(dt) {
   const tier = ranged.length && Math.random() < SURV_RANGED_SHARE ? ranged : melee;
   // 密度：开局每秒约 3 只，之后越刷越快、每群越大（场上最多 140 只）；波次间隙不刷，刷怪期间密一点补回来
   if (survWave.on && (survSpawnT -= dt) <= 0 && enemies.length < 140) {
-    survSpawnT = Math.max(.22, 1 - survT / 150) * .82 * (boss ? 2.5 : 1);   // 首领战期间小怪少一些
+    // 占领星球之前怪少一些（间隔拉长 1.6 倍），打掉核心后恢复正常并开始反扑
+    const tgt = planetTarget(), pre = PLANET && tgt && !tgt.def;
+    survSpawnT = Math.max(.22, 1 - survT / 150) * .82 * (boss ? 2.5 : 1) * (pre ? 1.6 : 1);   // 首领战期间小怪少一些
     const n = Math.min(12, 3 + Math.floor(survT / 35) + (Math.random() < .3 ? 1 : 0)), type = tier[Math.random() * tier.length | 0], a0 = rnd(0, TAU);
     const cnt = type === 'shieldbot' ? 1 : SURV_MELEE.has(type) ? n : Math.ceil(n / 3);
     for (let i = 0; i < cnt; i++) survSpawn(type, a0 + rnd(-.35, .35));
@@ -1524,9 +1533,10 @@ function startDefense(p) {
   if (p.def) return;
   for (const f of p.foes) if (f.hp > 0) { f.hp = 0; explosion(p.x + f.dx, p.y + f.dy, 30); }   // 残余据点随核心一起瓦解
   const hub = p.sites[BASE_N]; hub.hp = hub.max = Math.round(500 * (1 + .3 * p.i));
-  p.def = { wave: 0, t: 6, ids: [] };
-  floatText(W / 2, SURV_Y - 170, '核心摧毁 · 敌军即将反扑', 20, '#ffd28a', 2.6);
-  floatText(W / 2, SURV_Y - 140, '守住指挥中心', 15, '#bff4ff', 2.6);
+  // 守到第 20 波结束才通关；如果第 18 波以后才打掉核心，至少还要再守 3 波
+  p.def = { winWave: Math.max(SURV_WAVES, survWave.n + 3), t: 3 };
+  floatText(W / 2, SURV_Y - 170, '核心摧毁 · 敌军开始反扑', 20, '#ffd28a', 2.6);
+  floatText(W / 2, SURV_Y - 140, `守住指挥中心到第 ${p.def.winWave} 波`, 15, '#bff4ff', 2.6);
   sfxWarning();
 }
 function spawnDefender(p, role) {
@@ -1538,17 +1548,13 @@ function spawnDefender(p, role) {
   if (role === 'raid') e.raid = Math.random() < .6 ? hub : built[Math.random() * built.length | 0]; else e.siege = hub;
   return e;
 }
+// 守护阶段：每一波刷怪期间，每 4 秒有一小队敌军专门冲向 / 炮击我方基地（普通敌人照常追你）
 function defStep(p, dt) {
   const d = p.def;
-  survSpawnT += dt * .5;   // 守护期间普通刷怪放慢一半，主要是反扑的敌军
-  d.ids = d.ids.filter(e => e.hp > 0 && enemies.includes(e));
-  if (d.ids.length) return;
-  if (d.wave >= DEF_WAVES) { defenseWon(p); return; }
-  if ((d.t -= dt) > 0) return;
-  d.wave++; d.t = 7;
-  const n = 7 + d.wave * 4 + p.i * 2;
-  for (let k = 0; k < n; k++) d.ids.push(spawnDefender(p, k < n * .55 ? 'raid' : 'siege'));
-  floatText(W / 2, SURV_Y - 160, `第 ${d.wave} 波敌军来袭`, 18, '#ff9a7a', 2); sfxWarning();
+  if (!survWave.on || (d.t -= dt) > 0) return;
+  d.t = 4;
+  const n = 2 + Math.floor(survWave.n / 4) + Math.floor(p.i / 3);
+  for (let k = 0; k < n; k++) spawnDefender(p, Math.random() < .55 ? 'raid' : 'siege');
 }
 // 远程敌机：停在指挥中心外 230 左右绕圈，朝它开炮（炮弹打到建筑会掉血，护盾塔能挡）
 function siegeMove(e, edt) {
@@ -1943,7 +1949,7 @@ function drawPlanetHud() {
     if (t.def) {
       // 守护阶段：底部条显示指挥中心血量
       const D = t.def, hub = t.sites[BASE_N], k = Math.max(0, hub.hp / hub.max);
-      label = D.ids.length ? `守住指挥中心 · 第 ${D.wave}/${DEF_WAVES} 波 · 还剩 ${D.ids.length}` : D.wave >= DEF_WAVES ? '守护成功' : `第 ${D.wave + 1} 波 · ${Math.ceil(D.t)} 秒后来袭`;
+      label = survWave.on ? `守住指挥中心 · 第 ${survWave.n}/${D.winWave} 波` : `守住指挥中心 · 下一波 ${Math.ceil(survWave.t)} 秒`;
       ctx.fillStyle = 'rgba(6,20,36,.8)'; roundRect(bx, by, bw, 8, 4); ctx.fill();
       ctx.fillStyle = k > .5 ? '#7fdcff' : k > .25 ? '#ffd27a' : '#ff6a5a'; roundRect(bx, by, Math.max(4, bw * k), 8, 4); ctx.fill();
       edgeArrow(t.x + hub.dx, t.y + hub.dy, '120,220,255');
@@ -7428,7 +7434,7 @@ function drawHUD() {
   ctx.fillStyle = '#bff0ff'; ctx.fillRect(W - 31, 16, 4, 18); ctx.fillRect(W - 23, 16, 4, 18);
   ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(190,240,255,.85)'; ctx.textAlign = 'right';
   ctx.fillText(SURV ? '生存 ' + fmtTime(survT) : 'STAGE ' + stage, W - 8, 58);
-  if (SURV) { ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = survWave.on ? '#ffd28a' : '#9fe8ff'; ctx.fillText(survWave.on ? `第 ${survWave.n} 波` : `下一波 ${Math.ceil(survWave.t)}`, W - 8, 74); }
+  if (SURV) { ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = survWave.on ? '#ffd28a' : '#9fe8ff'; ctx.fillText(survWave.on ? `第 ${survWave.n}/${survWaveGoal()} 波` : `下一波 ${Math.ceil(survWave.t)}`, W - 8, 74); }
   ctx.textAlign = 'left';
 
   // 连击
