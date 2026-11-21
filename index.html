@@ -2898,7 +2898,7 @@ function fireMain(dt, eff, rate) {
   const P = player, S = P.s, br = branchOf();
   P.beams = [];
   P.mainTarget = nearestTargets(P.x, P.y - 30, 1, 700)[0] || null;
-  if (P.weapon === 'laser') { fireLaser(dt, eff, rate, br); return; }
+  if (P.weapon === 'laser') { fireLaser(dt, eff, rate, br); laserCut(); return; }
   if (P.weapon === 'flame') { fireFlame(dt, eff, rate, br); return; }
   P.fireT -= dt;
   if (P.fireT > 0) return;
@@ -2927,7 +2927,38 @@ function fireVulcan(eff, rate, br) {
     for (const [ox, a] of PATTERNS[eff]) shot(ox, a, br === 'ap' ? 1.4 : 1);
   }
   for (let i = 1; i <= S.spread; i++) for (const sd of [-1, 1]) shot(sd * (28 + i * 6), sd * (.32 + i * .12), .8);
+  if (time - (P.markAt ?? -9) >= MARK_CD) { P.markAt = time; const b = mkShot(P.x, P.y - 52 * SHIP_K, 0, S.dmgMul * 2); b.mark = true; b.sz = 1.7; pBullets.push(b); }   // 极光印记弹
 }
+// ================= 主武器特殊效果（每种一个） =================
+// 极光等离子 · 极光印记：每 2 秒多射一颗大光弹，命中处 80 范围内的敌人被打上印记，3 秒内受到伤害 +30%
+const MARK_CD = 2, MARK_T = 3, MARK_K = 1.3;
+function auroraMark(x, y) {
+  for (const e of enemies) if (e.hp > 0 && Math.hypot(e.x - x, e.y - y) < 80 + e.r) e.mark = MARK_T;
+  addPart({ t: 'ring', x, y, vx: 0, vy: 0, life: .4, max: .4, size: 170, c: '120,240,255' });
+  addPart({ t: 'glow', x, y, vx: 0, vy: 0, life: .3, max: .3, size: 110, c: '150,250,255' });
+  tone(1180, .12, 'triangle', .05); tone(1560, .16, 'triangle', .04, 0, .06);
+}
+// 圣辉光束 · 净化：光束扫过的敌方子弹直接被烧掉
+function laserCut() {
+  const P = player; let sparks = 0;
+  for (const bm of P.beams) {
+    const r = bm.w * .5 + 6;
+    for (const eb of eBullets) {
+      if (eb.dead) continue;
+      for (let i = 1; i < bm.pts.length; i++) if (segDist(eb.x, eb.y, bm.pts[i - 1][0], bm.pts[i - 1][1], bm.pts[i][0], bm.pts[i][1]) < r) { eb.dead = true; if (sparks++ < 6) hitSpark(eb.x, eb.y, '255,170,240'); break; }
+    }
+  }
+}
+// 雷霆 · 天雷：每 2.2 秒，从天上劈下一道大雷，目标周围 80 内的敌人受到 6 倍雷击伤害并麻痹 0.6 秒
+const SKYBOLT_CD = 2.2;
+function skyBolt(t, dmg) {
+  const x = t.x, y = t.y;
+  for (const o of targets()) if (Math.hypot(o.x - x, o.y - y) < 80 + o.r) { applyHit(o, dmg, o.x, o.y, '255,240,140', .5); if (o.kind === 'e') o.ref.stun = Math.max(o.ref.stun || 0, .6); }
+  subFx.push({ type: 'skybolt', x, y, t: 0, seed: Math.random() * 1000 });
+  shake = Math.max(shake, 5); noise(.35, .16, 3200); tone(90, .4, 'sawtooth', .06, -.5);
+}
+// 熔火喷流 · 熔岩火池：喷火时每 1.4 秒在火焰前端留下一片火池，持续 3 秒，踩进去的敌人被点燃
+const POOL_CD = 1.4, POOL_LIFE = 3;
 // ================= 虚空镰刃：切开空间 =================
 // 每 1.8 秒，主镰刃飞出 170 像素后在原地撕开一道空间裂缝（约 1 秒）：
 // 血量低（不到三成，或少于镰刃 3 刀的伤害）的敌人被吸进裂缝直接消失（照样算击杀）；其他敌人被定住 1 秒。首领和星球据点不受影响
@@ -2980,6 +3011,10 @@ function drawRifts() {
 function drawStuns() {
   ctx.save(); ctx.strokeStyle = 'rgba(200,140,255,.85)'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]); ctx.lineDashOffset = -time * 24;
   for (const e of enemies) { if (!(e.stun > 0) || e.hp <= 0 || e.sucked) continue; ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 7, 0, TAU); ctx.stroke(); }
+  // 极光印记：青色菱形标记
+  ctx.setLineDash([]); ctx.strokeStyle = 'rgba(120,240,255,.9)'; ctx.lineWidth = 1.8;
+  for (const e of enemies) { if (!(e.mark > 0) || e.hp <= 0) continue; const s = e.r + 10, a = Math.min(1, e.mark * 2); ctx.globalAlpha = a; ctx.beginPath(); ctx.moveTo(e.x, e.y - s); ctx.lineTo(e.x + s, e.y); ctx.lineTo(e.x, e.y + s); ctx.lineTo(e.x - s, e.y); ctx.closePath(); ctx.stroke(); }
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
 function mkWave(x, y, vx, vy, o) { return Object.assign({ x, y, vx, vy, wave: true, hits: new Set(), w: 34 }, o); }
@@ -3001,6 +3036,7 @@ function fireThunder(eff, rate, br) {
   const n = 1 + Math.floor(eff / 2) + S.spread, dmg = (2 + eff * .5) * S.dmgMul * (exec ? 1.15 : 1);
   const col = exec ? '230,140,255' : emp ? '120,200,255' : '255,230,90';
   const tg = nearestTargets(P.x, P.y - 30, n, 520), all = targets();
+  if (tg[0] && time - (P.boltAt ?? -9) >= SKYBOLT_CD) { P.boltAt = time; skyBolt(tg[0], dmg * 6); }   // 天雷
   if (tg[0]) P.mainTarget = tg[0];
   if (!tg.length) boltFx(P.x, P.y - 40, P.x + rnd(-50, 50), P.y - rnd(150, 240), col);
   let killed = false;
@@ -3354,7 +3390,8 @@ function updateEnemies(dt) {
     if (e.hit > 0) e.hit -= dt;
     // 电磁麻痹：移速与攻速降低
     let edt = dt;
-    if (e.stun > 0) { e.stun -= dt; edt = 0; }   // 被虚空裂缝定住：不动也不开火
+    if (e.stun > 0) { e.stun -= dt; edt = 0; }
+    if (e.mark > 0) e.mark -= dt;   // 被虚空裂缝定住：不动也不开火
     if (e.slow > 0) { e.slow -= dt; edt = Math.min(edt, dt * .4); if (Math.random() < dt * 6) boltFx(e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), '120,200,255'); }
     e.t += edt;
     if (SURV) survEnemyMove(e, edt);
@@ -3455,6 +3492,7 @@ const earlyK = () => (player && player.plevel < 6 ? 1 + .1 * (6 - player.plevel)
 function damageEnemy(e, d) {
   if (e.hp <= 0) return;
   d *= earlyK();
+  if (e.mark > 0) d *= MARK_K;   // 极光印记：受到伤害增加
   if (SURV && e.shT > 0 && e.type !== 'shieldbot') d *= .5;   // 护盾节点的护盾：伤害减半
   e.hp -= gm.ohk ? 1e9 : d; e.hit = .06; sfxHit();
   if (e.hp <= 0) killEnemy(e);
@@ -3717,6 +3755,7 @@ function updateBullets(dt) {
         if (b.rocket) { rocketBoom(b); b.dead = true; break; }
         applyHit({ kind: 'e', ref: e }, b.dmg, b.x, b.y, b.ap ? '255,210,90' : undefined);
         if (b.he) heBoom(b);
+        if (b.mark) { auroraMark(b.x, b.y); b.mark = false; }
         if (b.pierce > 0) { b.pierce--; (b.hits || (b.hits = new Set())).add(e); }
         else { b.dead = true; break; }
       }
@@ -4458,6 +4497,11 @@ function updateSubFx(dt) {
       for (const t of targets()) { if (f.hit.has(t.ref)) continue; const d = Math.hypot(t.x - f.x, t.y - f.y); if (Math.abs(d - f.r) < 14 + tReach(t) * .6) { f.hit.add(t.ref); applyHit(t, f.dmg, t.x, t.y, '120,255,220', .5); } }
       for (const b of eBullets) if (!b.dead && Math.abs(Math.hypot(b.x - f.x, b.y - f.y) - f.r) < 12) { b.dead = true; hitSpark(b.x, b.y, '120,255,220'); }
       if (f.r > f.max) f.dead = true;
+    } else if (f.type === 'skybolt') {
+      if (f.t > .4) f.dead = true;
+    } else if (f.type === 'pool') {
+      if (f.t > f.life) { f.dead = true; continue; }
+      if ((f.tick -= dt) <= 0) { f.tick = .2; for (const e of enemies) if (e.hp > 0 && Math.hypot(e.x - f.x, e.y - f.y) < f.r + e.r * .5) { e.burn = Math.max(e.burn || 0, 1.2); e.burnLv = Math.max(e.burnLv || 0, f.lv); } }
     } else if (f.type === 'strike') {
       if (f.t < f.delay) { if (tAlive(f.tgt)) { const p = tPos(f.tgt); f.x += (p.x - f.x) * Math.min(1, dt * 12); f.y += (p.y - f.y) * Math.min(1, dt * 12); } }
       else if (!f.fired) {
@@ -4473,6 +4517,25 @@ function updateSubFx(dt) {
 function drawSubFx() {
   ctx.globalCompositeOperation = 'lighter';
   for (const f of subFx) {
+    if (f.type === 'skybolt') {
+      // 天雷：从屏幕外劈到目标的锯齿闪电 + 落点光圈
+      const a = 1 - f.t / .4; let q = f.seed; const r1 = () => (q = (q * 9301 + 49297) % 233280) / 233280;
+      ctx.beginPath(); let x = f.x + (r1() - .5) * 60, y = f.y - H; ctx.moveTo(x, y);
+      for (let i = 1; i <= 10; i++) { y = f.y - H + i * H / 10; x = i === 10 ? f.x : f.x + (r1() - .5) * 70 * (1 - i / 10); ctx.lineTo(x, y); }
+      ctx.strokeStyle = `rgba(255,240,150,${.45 * a})`; ctx.lineWidth = 16; ctx.stroke(); ctx.strokeStyle = `rgba(255,255,230,${.95 * a})`; ctx.lineWidth = 4; ctx.stroke();
+      drawGlow(f.x, f.y, 150, '255,230,120', .8 * a);
+      ctx.strokeStyle = `rgba(255,240,160,${.7 * a})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(f.x, f.y, 80 * (1.1 - a * .3), 0, TAU); ctx.stroke();
+      continue;
+    }
+    if (f.type === 'pool') {
+      // 熔岩火池：出现和消失时淡入淡出，表面闪烁
+      const a = Math.min(1, f.t / .25) * Math.min(1, (f.life - f.t) / .5), fl = .85 + .15 * Math.sin(time * 14 + f.x);
+      ctx.globalCompositeOperation = 'source-over';
+      const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r); g.addColorStop(0, `rgba(255,170,60,${.5 * a * fl})`); g.addColorStop(.6, `rgba(230,70,20,${.38 * a})`); g.addColorStop(1, 'rgba(120,20,0,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(f.x, f.y, f.r, f.r * .8, 0, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'lighter'; drawGlow(f.x, f.y, f.r * 1.4, '255,120,40', .35 * a * fl);
+      continue;
+    }
     if (f.type === 'pulse' && FX.nova) {
       // 脉冲震荡：手绘冲击环（青色）
       const a = 1 - f.r / f.max, s = f.r * 2.4;
@@ -5809,6 +5872,7 @@ function fireFlame(dt, eff, rate, br) {
   // LV1 火苗会断续闪烁
   const sputter = lv === 1 ? .55 + .45 * Math.sin(time * 23) * Math.sin(time * 7.3) : 1;
   P.flameFx = { cones, cols, lv, sputter, blue, life: .05 };
+  if (time - (P.poolAt ?? -9) >= POOL_CD) { P.poolAt = time; const d = range * .7; subFx.push({ type: 'pool', x: x0, y: y0 - d, r: 44 + eff * 6, t: 0, life: POOL_LIFE, lv: eff, tick: 0 }); }   // 熔岩火池
   for (const [cx, cy, ang, rg, hf, w] of cones) {
     const main = w > .9, n = main ? [1, 2, 3, 5, 7, 9, 11][lv] : 2;
     for (let i = 0; i < n; i++) {
