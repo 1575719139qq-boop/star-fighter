@@ -596,7 +596,52 @@ function noise(d, v = .2, freq = 900) {
   g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.001, t + d);
   s.connect(f).connect(g).connect(sfxBus || actx.destination); s.start(t); s.stop(t + d);
 }
-function sfxBoom(s) { const n = performance.now(); if (n - lastBoom < 60) return; lastBoom = n; noise(clamp(s / 60, .2, 1.2), clamp(s / 120, .08, .35), 500 + s * 15); }
+// ---------- 合成音效零件：振荡器 / 滤波噪声，带包络，可按屏幕位置左右声像 ----------
+function sfxOut(x) {
+  const dest = sfxBus || actx.destination;
+  if (x === undefined || !actx.createStereoPanner) return dest;
+  const p = actx.createStereoPanner(); p.pan.value = clamp((x / W) * 2 - 1, -1, 1) * .55; p.connect(dest); return p;
+}
+function sOsc(out, t, type, f0, f1, d, v, a = .004) {
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + d);
+  g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(v, t + a); g.gain.exponentialRampToValueAtTime(.0001, t + d);
+  o.connect(g).connect(out); o.start(t); o.stop(t + d + .02);
+}
+function sNoise(out, t, d, v, type, f0, f1, q = 1, a = .003) {
+  if (!noiseBuf) { noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate); const b = noiseBuf.getChannelData(0); for (let i = 0; i < b.length; i++) b[i] = Math.random() * 2 - 1; }
+  const s = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+  s.buffer = noiseBuf; s.loop = true; s.playbackRate.value = rnd(.85, 1.15);
+  f.type = type; f.Q.value = q; f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(Math.max(30, f1), t + d);
+  g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(v, t + a); g.gain.exponentialRampToValueAtTime(.0001, t + d);
+  s.connect(f).connect(g).connect(out); s.start(t, Math.random() * .5); s.stop(t + d + .02);
+}
+// 爆炸：低频冲击 + 由亮变暗的爆裂噪声 + 碎片噼啪声；大爆炸再加一层长的低沉轰鸣。按大小 s 变化，按 x 左右声像
+function sfxBoom(s, x) {
+  const n = performance.now(); if (!actx || muted || n - lastBoom < 45) return; lastBoom = n;
+  const t = actx.currentTime, out = sfxOut(x), k = clamp(s / 40, .25, 2.2), big = s >= 45;
+  sOsc(out, t, 'sine', 150 / Math.sqrt(k), 38, .18 + .22 * k, .16 + .1 * Math.min(1, k), .003);
+  sNoise(out, t, .22 + .35 * k, .2 + .08 * Math.min(1.5, k), 'lowpass', 2600 + 600 / k, 90, .7);
+  sNoise(out, t + .01, .08 + .05 * k, .07, 'highpass', 3200, 1800, .8);
+  if (k > .6) for (let i = 0; i < 3; i++) sNoise(out, t + .05 + i * rnd(.04, .09), .05, .035, 'bandpass', rnd(1800, 3500), 900, 3);
+  if (big) { sNoise(out, t + .03, 1 + .4 * k, .14, 'lowpass', 420, 40, .5, .05); sOsc(out, t, 'triangle', 70, 30, .9, .09, .02); }
+}
+// 开火声：每种主武器一种，最多每 70 毫秒响一次，音调带一点随机
+let lastShot = 0, lastHit = 0;
+function sfxShot(kind) {
+  const n = performance.now(); if (!actx || muted || n - lastShot < (kind === 'laser' ? 0 : 70)) return; lastShot = n;
+  const t = actx.currentTime, out = sfxBus || actx.destination, j = rnd(.94, 1.06);
+  if (kind === 'vulcan') { sOsc(out, t, 'square', 1500 * j, 520 * j, .07, .022); sOsc(out, t, 'triangle', 760 * j, 300 * j, .06, .03); sNoise(out, t, .03, .02, 'highpass', 5000, 3000); }
+  else if (kind === 'wave') { sNoise(out, t, .16, .06, 'bandpass', 500 * j, 2200 * j, 2.5, .02); sOsc(out, t, 'sine', 300 * j, 600 * j, .12, .02, .02); }
+  else if (kind === 'thunder') { sOsc(out, t, 'sawtooth', 1400 * j, 260, .09, .028); sNoise(out, t, .1, .05, 'highpass', 4200, 1500, 1.2); sNoise(out, t + .03, .05, .03, 'bandpass', 2600, 1200, 4); }
+  else if (kind === 'laser') { sOsc(out, t, 'sawtooth', 210 * j, 190 * j, .22, .012, .03); sOsc(out, t, 'sine', 840 * j, 820 * j, .22, .014, .03); }
+  else if (kind === 'rocket') { sNoise(out, t, .3, .07, 'bandpass', 600, 2400, 1.5, .02); sOsc(out, t, 'triangle', 180, 90, .25, .03, .02); }
+}
+// 命中：很轻的一下金属声，限制频率免得糊成一片
+function sfxHit() {
+  const n = performance.now(); if (!actx || muted || n - lastHit < 45) return; lastHit = n;
+  sOsc(sfxBus || actx.destination, actx.currentTime, 'triangle', rnd(2300, 2700), 1500, .035, .012);
+}
 function sfxWarning() { for (let i = 0; i < 3; i++) { tone(660, .35, 'sawtooth', .05, 0, i * .9); tone(440, .35, 'sawtooth', .05, 0, i * .9 + .4); } }
 function sfxPick() { tone(880, .08, 'square', .05); tone(1320, .12, 'square', .05, 0, .07); }
 function sfxHurt() { tone(220, .25, 'sawtooth', .08, .4); noise(.2, .12, 1500); }
@@ -2461,7 +2506,7 @@ function explosion(x, y, s) {
   }
   for (let i = 0; i < s / 8; i++) addPart({ t: 'smoke', x: x + rnd(-s, s) * .5, y: y + rnd(-s, s) * .5, vx: rnd(-20, 20), vy: rnd(-20, 30), life: rnd(.6, 1.1), max: 1.1, size: rnd(s * .5, s), c: '' });
   if (!art) addPart({ t: 'ring', x, y, vx: 0, vy: 0, life: .4, max: .4, size: s * 2.4, c: '255,220,160' });
-  sfxBoom(s);
+  sfxBoom(s, x);
 }
 function hitSpark(x, y, rgb = '120,220,255') {
   if (FX.flare) fxPart('flare', x, y, 26, .14, { c: rgb, g0: .5, g1: 1 });   // 命中火花：小号手绘星芒
@@ -2515,7 +2560,9 @@ function updatePlayer(dt) {
   survFrame(() => {
   if (!hold) {
     // 取消稀有度后按实测伤害拉平：每种主武器 / 副武器一个系数，只在开火的这一下乘到伤害上
-    const dm0 = S.dmgMul; S.dmgMul = dm0 * (WEAPON_BAL[P.weapon] || 1); fireMain(dt, eff, rate); S.dmgMul = dm0;
+    const dm0 = S.dmgMul, ft0 = P.fireT; S.dmgMul = dm0 * (WEAPON_BAL[P.weapon] || 1); fireMain(dt, eff, rate); S.dmgMul = dm0;
+    if (P.weapon === 'laser') { if ((P.laserSnd = (P.laserSnd || 0) - dt) <= 0) { P.laserSnd = .2; sfxShot('laser'); } }
+    else if (P.weapon !== 'flame' && P.fireT > ft0) sfxShot(P.weapon);   // 这一帧开了火
     fireSub(dt, rate);
   }
   fireSig(dt, rate);
@@ -2790,6 +2837,7 @@ function fireSubOne(dt, rate) {
     P.subT = (1.1 - L * .15) / rate;
     const n = L >= 3 ? 2 : 1;
     // 3 级一次两发，单发伤害打七折，免得 3 级突然翻倍
+    sfxShot('rocket');
     for (let k = 0; k < n; k++) pBullets.push({ x: P.x + (n === 1 ? 0 : k ? 20 : -20), y: P.y - 20, vx: 0, vy: -120, dmg: (8 + L * 3) * S.dmgMul * (L >= 3 ? .7 : 1), rocket: true, rad: 50 + L * 12 });
   } else if (P.sub === 'orbit') {
     // 环绕雷电：切碎子弹 + 接触伤害 + 定时放电
@@ -3133,7 +3181,7 @@ function damageEnemy(e, d) {
   if (e.hp <= 0) return;
   d *= earlyK();
   if (SURV && e.shT > 0 && e.type !== 'shieldbot') d *= .5;   // 护盾节点的护盾：伤害减半
-  e.hp -= gm.ohk ? 1e9 : d; e.hit = .06;
+  e.hp -= gm.ohk ? 1e9 : d; e.hit = .06; sfxHit();
   if (e.hp <= 0) killEnemy(e);
 }
 function mult() { return 1 + Math.min(3, Math.floor(combo / 10) * (.1 + (player ? player.s.comboRate : 0))); }
