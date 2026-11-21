@@ -1624,12 +1624,16 @@ function raidMove(e, edt) {
   if (d < 24) { siteHit(s, 30); explosion(e.x, e.y, 20); damageEnemy(e, 1e9); }
   return true;
 }
+let buildNear = null, buildBtn = null;
+function openNearBuild() { if (buildNear && state === 'play') { openBuild(buildNear.p, buildNear); return true; } return false; }
 function baseStep(p, dt) {
   const P = player, hx = P.x, hy = P.y + HIT_OY, built = p.sites.filter(s => s.b);
+  let nearB = null, nearD = 1e9;
+  buildNear = null;
   for (const s of p.sites) {
     const x = p.x + s.dx, y = p.y + s.dy, d = Math.hypot(hx - x, hy - y);
-    if (d > 70) s.armed = true;
-    else if (d < 34 && s.armed && (!s.b || s.b === 'mod' || s.lv < buildMax(s.b)) && !P.dead) { s.armed = false; openBuild(p, s); return; }
+    // 靠近地基只显示一个「建造 / 升级 / 改装」按钮，点按钮或按 B 才打开菜单（不再一碰就弹出来打断战斗）
+    if (d < 60 && (!s.b || s.b === 'mod' || s.lv < buildMax(s.b)) && !P.dead && (!nearB || d < nearD)) { nearB = s; nearD = d; }
     if (!s.b) continue;
     if (s.hit > 0) s.hit -= dt;
     s.t -= dt;
@@ -1655,6 +1659,7 @@ function baseStep(p, dt) {
       if (x > -40 && x < W + 40 && y > -40 && y < H + 40) floatText(x, y - 26, '+1', 11, '#ffd27a', .9);
     }
   }
+  buildNear = nearB;
   // 敌弹打到建筑
   for (const b of eBullets) { if (b.dead) continue; for (const s of built) { if (!s.b) continue; const x = p.x + s.dx, y = p.y + s.dy; if ((b.x - x) ** 2 + (b.y - y) ** 2 < 22 * 22) { b.dead = true; siteHit(s, 8); break; } } }
   // 导弹井的炮弹：飞 0.7 秒落地，范围伤害
@@ -1915,7 +1920,20 @@ function edgeArrow(tx, ty, rgb) {
   ctx.fillStyle = `rgba(${rgb},${.7 + .3 * Math.sin(time * 6)})`; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(-8, -10); ctx.lineTo(-3, 0); ctx.lineTo(-8, 10); ctx.closePath(); ctx.stroke(); ctx.fill(); ctx.restore();
 }
+// 附近地基上方的按钮（画在屏幕坐标里，点它打开建造菜单）
+function drawBuildBtn() {
+  buildBtn = null; const s = buildNear; if (!s || state !== 'play') return;
+  const p = s.p, x = p.x + s.dx, y = p.y + s.dy - 62, w = 92, h = 32, label = (s.b === 'mod' ? '改装' : s.b ? '升级' : '建造') + ' [B]';
+  buildBtn = { x: x - w / 2, y: y - h / 2, w, h };
+  const pu = .75 + .25 * Math.sin(time * 5);
+  ctx.save(); ctx.fillStyle = 'rgba(10,40,60,.92)'; roundRect(x - w / 2, y - h / 2, w, h, 8); ctx.fill();
+  ctx.strokeStyle = `rgba(255,214,120,${pu})`; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 6, y + h / 2); ctx.lineTo(x, y + h / 2 + 7); ctx.lineTo(x + 6, y + h / 2); ctx.closePath(); ctx.fillStyle = `rgba(255,214,120,${pu})`; ctx.fill();
+  ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#ffe6b0'; ctx.fillText(label, x, y + 1);
+  ctx.restore();
+}
 function drawPlanetHud() {
+  drawBuildBtn();
   const P = player, t = planetTarget(), bw = 180, bx = W / 2 - bw / 2, by = H - 122;
   ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.font = `bold 11px ${FONT}`; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.7)';
   let label = '';
@@ -2616,6 +2634,7 @@ addEventListener('keydown', e => {
   if (state === 'build') { const k = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8'].indexOf(e.code), ids = buildIds(); if (k >= 0 && ids[k]) buildAct((buildCtx.pad.b === 'mod' ? 'm:' : 'b:') + ids[k]); if (e.code === 'Escape' || e.code === 'KeyB') closeBuild(); return; }
   if (state === 'paused' && e.code === 'KeyQ') { quitRun(); return; }
   if (e.code === 'Space' && state === 'play') useBomb();
+  if (e.code === 'KeyB' && state === 'play' && openNearBuild()) return;
   if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
   if (e.code === 'KeyM') muted = !muted;
   if (e.code === 'KeyG' || e.code === 'Backquote') toggleGM();
@@ -2651,6 +2670,7 @@ cv.addEventListener('pointerdown', e => {
     return;
   }
   if (p.x > W - 52 && p.y < 52) { togglePause(); return; }
+  if (state === 'play' && buildBtn && p.x > buildBtn.x - 8 && p.x < buildBtn.x + buildBtn.w + 8 && p.y > buildBtn.y - 8 && p.y < buildBtn.y + buildBtn.h + 8 && openNearBuild()) return;
   if (state === 'paused') { const a = uiHit(p); if (volAct(a)) return; if (a === 'quit') quitRun(); else togglePause(); return; }
   if (!SURV && p.x < 64 && p.y > H - 70) { useBomb(); return; }
   if (e.pointerType !== 'mouse') {
