@@ -1029,7 +1029,7 @@ const SURV_MOVE = {
 const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 function startSurvival() {
   startGame();
-  SURV = true; survFx = []; survT = 0; survBombCD = 0; survSpawnT = .6; survEliteT = 40; survRockT = 6; survBgX = survBgY = 0; survBossN = 0; survNextBoss = SURV_BOSS_FIRST; survBossWarn = 0;
+  SURV = true; survFx = []; survT = 0; survBombCD = 0; survWave = { n: 1, on: true, t: SURV_WAVE_ON(1) }; survSpawnT = .6; survEliteT = 40; survRockT = 6; survBgX = survBgY = 0; survBossN = 0; survNextBoss = SURV_BOSS_FIRST; survBossWarn = 0;
   player.x = player.tx = W / 2; player.y = player.ty = SURV_Y; player.ang = 0; player.joy = null;
   player.s.dmgMul *= SURV_DMG;
   setPhase('surv');
@@ -1142,18 +1142,28 @@ function survFrame(fn) {
   if (P.rail && P.rail !== rail) { R(P.rail, 'x', 'y0', sn); P.rail.ang = a; }
 }
 // 刷怪：从屏幕外一圈涌来；时间越长种类越多、越密、越硬，定时刷精英；偶尔有陨石横穿
+// 生存模式按波次刷怪：一波刷 22 秒左右（越往后越长，最多 32 秒），然后停 7 秒喘口气，再来下一波
+const SURV_WAVE_ON = n => Math.min(32, 21 + n), SURV_WAVE_OFF = 7;
+let survWave = { n: 1, on: true, t: SURV_WAVE_ON(1) };
+function survWaveStep(dt) {
+  const w = survWave;
+  if ((w.t -= dt) > 0) return;
+  if (w.on) { w.on = false; w.t = SURV_WAVE_OFF; floatText(W / 2, 96, `第 ${w.n} 波结束`, 16, '#9fe8ff', 1.6); tone(523, .15, 'triangle', .05); tone(784, .2, 'triangle', .05, 0, .12); }
+  else { w.n++; w.on = true; w.t = SURV_WAVE_ON(w.n); floatText(W / 2, 96, `第 ${w.n} 波`, 20, '#ffd28a', 1.8); tone(330, .2, 'sawtooth', .04); tone(440, .25, 'sawtooth', .04, 0, .15); }
+}
 function survUpdate(dt) {
   survT += dt;
+  survWaveStep(dt);
   const live = SURV_TIERS.filter(t => survT >= t[0]), melee = live.flatMap(t => t[1]), ranged = live.flatMap(t => t[2]);
   const tier = ranged.length && Math.random() < SURV_RANGED_SHARE ? ranged : melee;
-  // 密度：开局每秒约 3 只，之后越刷越快、每群越大（场上最多 140 只）
-  if ((survSpawnT -= dt) <= 0 && enemies.length < 140) {
-    survSpawnT = Math.max(.25, 1 - survT / 150) * (boss ? 2.5 : 1);   // 首领战期间小怪少一些
+  // 密度：开局每秒约 3 只，之后越刷越快、每群越大（场上最多 140 只）；波次间隙不刷，刷怪期间密一点补回来
+  if (survWave.on && (survSpawnT -= dt) <= 0 && enemies.length < 140) {
+    survSpawnT = Math.max(.22, 1 - survT / 150) * .82 * (boss ? 2.5 : 1);   // 首领战期间小怪少一些
     const n = Math.min(12, 3 + Math.floor(survT / 35) + (Math.random() < .3 ? 1 : 0)), type = tier[Math.random() * tier.length | 0], a0 = rnd(0, TAU);
     const cnt = type === 'shieldbot' ? 1 : SURV_MELEE.has(type) ? n : Math.ceil(n / 3);
     for (let i = 0; i < cnt; i++) survSpawn(type, a0 + rnd(-.35, .35));
   }
-  if (!boss && (survEliteT -= dt) <= 0) { survEliteT = Math.max(20, 40 - survT / 20); survSpawn(SURV_ELITES[Math.random() * SURV_ELITES.length | 0], rnd(0, TAU), true); }
+  if (!boss && survWave.on && (survEliteT -= dt) <= 0) { survEliteT = Math.max(20, 40 - survT / 20); survSpawn(SURV_ELITES[Math.random() * SURV_ELITES.length | 0], rnd(0, TAU), true); }
   if ((survRockT -= dt) <= 0) {
     survRockT = rnd(4, 8);
     const a = rnd(0, TAU), b = a + Math.PI + rnd(-.4, .4), sp = rnd(70, 120);
@@ -7266,6 +7276,7 @@ function drawHUD() {
   ctx.fillStyle = '#bff0ff'; ctx.fillRect(W - 31, 16, 4, 18); ctx.fillRect(W - 23, 16, 4, 18);
   ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(190,240,255,.85)'; ctx.textAlign = 'right';
   ctx.fillText(SURV ? '生存 ' + fmtTime(survT) : 'STAGE ' + stage, W - 8, 58);
+  if (SURV) { ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = survWave.on ? '#ffd28a' : '#9fe8ff'; ctx.fillText(survWave.on ? `第 ${survWave.n} 波` : `下一波 ${Math.ceil(survWave.t)}`, W - 8, 74); }
   ctx.textAlign = 'left';
 
   // 连击
