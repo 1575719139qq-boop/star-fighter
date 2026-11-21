@@ -2867,9 +2867,14 @@ function fireLaser(dt, eff, rate, br) {
     // 向右移动时鞭梢向左滞后，停下时弹回并甩过中线（抽打），随后约 1 秒内回正。
     // 鞭梢甩得越快伤害越高（最高 2.5 倍）
     const w = 16 + eff * 5 + S.spread * 5, N = 14, seg = 54, Lw = N * seg;
-    const vx = (x - (P.whipLX ?? x)) / Math.max(dt, 1e-3); P.whipLX = x;
+    // 横向速度：闯关模式看机体左右移动；生存模式机体固定在屏幕中间（是世界在动），改用移动速度在机头坐标里的横向分量 + 机头转向的角速度
+    let vx;
+    if (SURV) { const a = P.ang || 0, da = ((a - (P.whipLA ?? a) + Math.PI * 3) % TAU) - Math.PI; P.whipLA = a; vx = (P.mvx || 0) * Math.cos(a) + (P.mvy || 0) * Math.sin(a) + da / Math.max(dt, 1e-3) * Lw * .35; }
+    else { vx = (x - (P.whipLX ?? x)) / Math.max(dt, 1e-3); P.whipLX = x; }
     P.whipVX = (P.whipVX || 0) + (vx - (P.whipVX || 0)) * Math.min(1, dt * 12);
-    const target = clamp(-P.whipVX * .55, -Lw * .6, Lw * .6);
+    // 站着不动时光鞭也会自己左右横扫（约 2.4 秒一个来回），移动 / 转向再叠加上去
+    P.whipPh = (P.whipPh || 0) + dt * 2.6;
+    const target = clamp(-P.whipVX * .55 + Math.sin(P.whipPh) * Lw * .32, -Lw * .6, Lw * .6);
     P.whipBV = ((P.whipBV || 0) + (target - (P.whipB || 0)) * 60 * dt) * Math.exp(-6 * dt);
     P.whipB = clamp((P.whipB || 0) + P.whipBV * dt, -Lw * .65, Lw * .65);
     const crack = clamp(1 + Math.abs(P.whipBV) / 700, 1, 2.5);
