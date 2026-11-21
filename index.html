@@ -979,7 +979,7 @@ function startGame() {
     weapon: 'vulcan', lastLv: 1, lastBranch: null, subs: [], sub: null, subLv: 0, subT: 0, orbA: 0, orbs: [], beams: [], branch: {}, evoAsked: {}, mainTarget: null, whipA: 0, zapT: 0, sigT: 1, sigCharge: 0, sigReady: 0, blades: [], rail: null };
   applyLoadout(player);
   ShipA.warm(curSkin, player.weapon);
-  pBullets = []; eBullets = []; enemies = []; pickups = []; parts = []; texts = []; boss = null; holes = []; subFx = []; wrecks = []; stains = [];
+  pBullets = []; eBullets = []; enemies = []; pickups = []; parts = []; texts = []; boss = null; holes = []; subFx = []; wrecks = []; stains = []; rifts = [];
   combo = 0; comboT = 0; odGauge = 0; overdrive = 0; shake = 0; flash = 0; redFlash = 0; bonusLines = [];
   choiceQueue = []; choices = []; storm = null; arenaK = 0;
   setPhase('intro');
@@ -1065,6 +1065,7 @@ function worldShift(dx, dy) {
   for (const w of wrecks) mv(w);
   for (const s of stains) mv(s);
   for (const h of holes) mv(h);
+  for (const r of rifts) mv(r);
   for (const p of planets) mv(p);
   if (boss) { mv(boss); boss.cx = (boss.cx || 0) + dx; boss.cy = (boss.cy || 0) + dy; }   // 首领在世界坐标里，不跟着镜头走
   for (const f of survFx) if (f.x !== undefined) mv(f);
@@ -2927,6 +2928,60 @@ function fireVulcan(eff, rate, br) {
   }
   for (let i = 1; i <= S.spread; i++) for (const sd of [-1, 1]) shot(sd * (28 + i * 6), sd * (.32 + i * .12), .8);
 }
+// ================= 虚空镰刃：切开空间 =================
+// 每 1.8 秒，主镰刃飞出 170 像素后在原地撕开一道空间裂缝（约 1 秒）：
+// 血量低（不到三成，或少于镰刃 3 刀的伤害）的敌人被吸进裂缝直接消失（照样算击杀）；其他敌人被定住 1 秒。首领和星球据点不受影响
+let rifts = [];
+const RIFT_CD = 1.8, RIFT_LIFE = 1.1;
+function spawnRift(b) {
+  const hx = b.hx ?? 0, hy = b.hy ?? -1, len = Math.max(110, b.w * 1.4);
+  rifts.push({ x: b.x, y: b.y, px: -hy, py: hx, len, t: 0, dmg: b.dmg, hit: new Set() });
+  tone(140, .35, 'sawtooth', .05, -.6); noise(.3, .08, 2400);
+}
+const riftOpen = r => Math.min(1, r.t / .15) * Math.min(1, (RIFT_LIFE - r.t) / .2);
+function updateRifts(dt) {
+  for (const r of rifts) {
+    r.t += dt; if (r.t > RIFT_LIFE) { r.dead = true; continue; }
+    const half = r.len / 2 * riftOpen(r), x0 = r.x - r.px * half, y0 = r.y - r.py * half, x1 = r.x + r.px * half, y1 = r.y + r.py * half;
+    for (const e of enemies) {
+      if (e.hp <= 0 || e.phased || e.sucked || r.hit.has(e)) continue;
+      if (segDist(e.x, e.y, x0, y0, x1, y1) > e.r + 22) continue;
+      r.hit.add(e);
+      if (e.hp < e.maxHp * .3 || e.hp < r.dmg * 3) { e.sucked = { r, t: 0 }; e.stun = .5; }
+      else { e.stun = Math.max(e.stun || 0, 1); hitSpark(e.x, e.y, '200,140,255'); }
+    }
+  }
+  // 被吸进去的敌人：0.3 秒内滑向裂缝中心然后消失
+  for (const e of enemies) {
+    const s = e.sucked; if (!s || e.hp <= 0) continue;
+    s.t += dt; const k = Math.min(1, dt * 12); e.x += (s.r.x - e.x) * k; e.y += (s.r.y - e.y) * k; e.x0 = e.x;
+    if (Math.random() < .5) addPart({ t: 'glow', x: e.x + rnd(-e.r, e.r), y: e.y + rnd(-e.r, e.r), vx: (s.r.x - e.x) * 3, vy: (s.r.y - e.y) * 3, life: .25, max: .25, size: 10, c: '190,110,255' });
+    if (s.t > .3) damageEnemy(e, 1e9);
+  }
+  rifts = rifts.filter(r => !r.dead);
+}
+function drawRifts() {
+  if (!rifts.length) return;
+  ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const r of rifts) {
+    const open = riftOpen(r), half = r.len / 2 * open, n = 9, pts = [];
+    for (let i = 0; i <= n; i++) { const u = i / n * 2 - 1, j = (i % 2 ? 1 : -1) * 5 * open * (1 - Math.abs(u)); pts.push([r.x + r.px * half * u + r.py * j, r.y + r.py * half * u - r.px * j]); }
+    const path = () => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); };
+    ctx.globalCompositeOperation = 'lighter';
+    drawGlow(r.x, r.y, r.len * .9, '170,90,255', .45 * open);
+    path(); ctx.strokeStyle = `rgba(200,140,255,${.55 * open})`; ctx.lineWidth = 16 * open; ctx.stroke();
+    path(); ctx.strokeStyle = `rgba(240,210,255,${.9 * open})`; ctx.lineWidth = 7 * open; ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+    path(); ctx.strokeStyle = `rgba(4,0,12,${.95 * open})`; ctx.lineWidth = 4 * open; ctx.stroke();
+  }
+  ctx.restore();
+}
+// 被定住的敌人：外面一圈转动的紫色虚线
+function drawStuns() {
+  ctx.save(); ctx.strokeStyle = 'rgba(200,140,255,.85)'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]); ctx.lineDashOffset = -time * 24;
+  for (const e of enemies) { if (!(e.stun > 0) || e.hp <= 0 || e.sucked) continue; ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 7, 0, TAU); ctx.stroke(); }
+  ctx.restore();
+}
 function mkWave(x, y, vx, vy, o) { return Object.assign({ x, y, vx, vy, wave: true, hits: new Set(), w: 34 }, o); }
 function fireWave(eff, rate, br) {
   const P = player, S = P.s, shock = br === 'shock', helix = br === 'helix', boomer = br === 'boomer';
@@ -2934,8 +2989,9 @@ function fireWave(eff, rate, br) {
   // 回旋镰刃：生存模式里玩家在屏幕中间、上方空间短，飞得慢一点、折返得快一点，不然还没回头就飞出屏幕了
   const o = { dmg: (8 + eff * 3) * S.dmgMul * (shock ? 1.55 : helix ? .7 : 1), grow: (16 + eff * 18) * (shock ? 1.6 : 1), shock, boomer, dec: SURV ? 1100 : 900,
     c: LOOK.emis };
-  if (helix) for (const s of [-1, 1]) pBullets.push(mkWave(P.x, P.y - 40, 0, -560, Object.assign({}, o, { helix: s, x0: P.x, ht: 0 })));
-  else pBullets.push(mkWave(P.x, P.y - 40, 0, boomer ? (SURV ? -760 : -950) : -620, o));
+  const rift = time - (P.riftAt ?? -9) >= RIFT_CD; if (rift) P.riftAt = time;   // 这一刀会切开空间
+  if (helix) for (const s of [-1, 1]) pBullets.push(mkWave(P.x, P.y - 40, 0, -560, Object.assign({}, o, { helix: s, x0: P.x, ht: 0, rift: rift && s < 0 })));
+  else pBullets.push(mkWave(P.x, P.y - 40, 0, boomer ? (SURV ? -760 : -950) : -620, Object.assign({}, o, { rift })));
   for (let i = 1; i <= S.spread; i++) for (const sd of [-1, 1])
     pBullets.push(mkWave(P.x + sd * 20, P.y - 30, sd * (140 + i * 60), -560, Object.assign({}, o, { dmg: o.dmg * .6, grow: 30, helix: 0, boomer: false })));
 }
@@ -3298,7 +3354,8 @@ function updateEnemies(dt) {
     if (e.hit > 0) e.hit -= dt;
     // 电磁麻痹：移速与攻速降低
     let edt = dt;
-    if (e.slow > 0) { e.slow -= dt; edt = dt * .4; if (Math.random() < dt * 6) boltFx(e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), '120,200,255'); }
+    if (e.stun > 0) { e.stun -= dt; edt = 0; }   // 被虚空裂缝定住：不动也不开火
+    if (e.slow > 0) { e.slow -= dt; edt = Math.min(edt, dt * .4); if (Math.random() < dt * 6) boltFx(e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), '120,200,255'); }
     e.t += edt;
     if (SURV) survEnemyMove(e, edt);
     else if (e.type === 'fighter' || e.type === 'sniper' || e.type === 'acidbat' || e.type === 'hive' || e.type === 'sentinel' || e.type === 'wraith') {
@@ -3344,7 +3401,7 @@ function updateEnemies(dt) {
       if (fb === 'melt') e.slow = Math.max(e.slow || 0, .15);
       if (fb === 'wild' && (e.spreadT = (e.spreadT || 0) - dt) <= 0) { e.spreadT = .5; for (const o of enemies) if (o !== e && o.hp > 0 && !(o.burn > 0) && Math.hypot(o.x - e.x, o.y - e.y) < 75) { o.burn = 3; o.burnLv = e.burnLv; addPart({ t: 'glow', x: (o.x + e.x) / 2, y: (o.y + e.y) / 2, vx: 0, vy: -20, life: .3, max: .3, size: 18, c: '255,150,40' }); } }
       if (e.hp <= 0) killEnemy(e); else if (Math.random() < dt * 8) addPart({ t: 'glow', x: e.x + rnd(-e.r, e.r) * .5, y: e.y, vx: 0, vy: -40, life: .4, max: .4, size: 12, c: '255,130,40' }); }
-    if (canFire && (SURV ? e.x > -10 && e.x < W + 10 && e.y > -10 && e.y < H + 10 : e.y > 10 && e.y < H * .7)) {
+    if (canFire && !(e.stun > 0) && (SURV ? e.x > -10 && e.x < W + 10 && e.y > -10 && e.y < H + 10 : e.y > 10 && e.y < H * .7)) {
       if (SURV && (SURV_MELEE.has(e.type) || SURV_SPECIAL.has(e.type))) { /* 生存模式：近战型不开火，特殊型用自己的攻击 */ }
       else if (e.type === 'dart') {
         // 俯冲经过时打一次扇形弹
@@ -3611,6 +3668,7 @@ function updateBullets(dt) {
     }
     if (b.wave) {
       b.w = Math.min(b.grow, b.w + 160 * dt);
+      if (b.rift && (b.trav = (b.trav || 0) + Math.hypot(b.vx, b.vy) * dt) > 170) { b.rift = false; spawnRift(b); }
       if (b.boomer && b.hx !== undefined) {
         // 生存模式：沿机头方向减速、折返，回程时向玩家所在的中线收拢
         b.vx -= b.hx * (b.dec || 900) * dt; b.vy -= b.hy * (b.dec || 900) * dt;
@@ -3988,6 +4046,7 @@ function update(dt) {
   updateSubFx(dt);
   updateBullets(dt);
   planetStep(dt);
+  updateRifts(dt);
   updatePickups(dt);
   updateParts(dt);
   if (comboT > 0) { comboT -= dt; if (comboT <= 0) combo = 0; }
@@ -6805,8 +6864,10 @@ function render() {
   for (const w of wrecks) drawWreck(w);
   for (const h of holes) drawHoleWell(h);
   if (SURV) drawSurvUnder();
+  drawRifts();
   for (const e of enemies) if (e.y > -60 && (!SURV || (e.y < H + 80 && e.x > -80 && e.x < W + 80))) { drawEnemy(e); if (e.burn > 0) drawBurn(e); }
   if (SURV) drawSurvFx();
+  drawStuns();
   drawEnemyLevels();
   if (boss) drawBoss(boss);
 
