@@ -3382,6 +3382,8 @@ function spawnDart(x, y) {
   spawnEnemy('dart', x, y, { vy, vx: clamp((player.x - x) / tt * .8, -160, 160) });
 }
 function aimAt(x, y) { return Math.atan2(player.y - y, player.x - x); }
+// 敌弹最远飞多远：生存模式 420（敌人从四周来，打不中就很快消失），闯关模式 600（敌人在上方，要能飞到屏幕下半部）
+const EB_RANGE = () => SURV ? 420 : 600, EB_FADE = 90;
 function eShot(x, y, ang, spd, k = 'orange') { spd *= player.s.bulletSlow; eBullets.push({ x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, k, r: BUG_R[k] || (k === 'big' ? 8 : k === 'needle' ? 3.5 : 5) }); }
 function updateEnemies(dt) {
   const canFire = !player.dead;
@@ -3779,6 +3781,8 @@ function updateBullets(dt) {
     if (b.dead) continue;
     if (BUG_R[b.k]) { bugShotUpdate(b, dt); if (b.dead) continue; }
     b.x += b.vx * dt; b.y += b.vy * dt;
+    // 敌弹射程有限：飞出 EB_RANGE 就消失（最后一段淡出）；风暴关卡的弹幕有自己的寿命，不受影响
+    if (!b.st) { b.fly = (b.fly || 0) + Math.hypot(b.vx, b.vy) * dt; if (b.fly > EB_RANGE()) { b.dead = true; continue; } }
     const m = b.m || 20;
     if (b.x < -m || b.x > W + m || b.y < -m || b.y > H + m || (b.st && (b.life -= dt) < 0)) { b.dead = true; continue; }
     if (P.dead) continue;
@@ -7037,8 +7041,10 @@ function render() {
     ctx.globalCompositeOperation = 'source-over';
   }
   drawStormFx();
-  // 敌弹（贴图为 2 倍分辨率）
+  // 敌弹（贴图为 2 倍分辨率）；快到射程尽头时逐渐变淡
+  const ebR = EB_RANGE();
   for (const b of eBullets) {
+    ctx.globalAlpha = b.fly > ebR - EB_FADE ? Math.max(0, (ebR - b.fly) / EB_FADE) : 1;
     if (b.k === 'needle') {
       ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(Math.atan2(b.vy, b.vx) - Math.PI / 2);
       if (FX.eb_needle) { ctx.globalCompositeOperation = 'lighter'; drawGlow(0, -6, 16, '255,40,60', .5); ctx.globalCompositeOperation = 'source-over'; ctx.drawImage(FX.eb_needle, -3, -40, 6, 48); }
@@ -7058,6 +7064,7 @@ function render() {
     const s = ebSpr(b.k) || SPR[b.k] || SPR.orange;
     ctx.drawImage(s, b.x - s.width / 4, b.y - s.height / 4, s.width / 2, s.height / 2);
   }
+  ctx.globalAlpha = 1;
   if (!P.dead && !(P.inv > 0 && Math.floor(time * 20) % 2 === 0 && phase !== 'intro')) drawHitMarker();
   if (gm.hitbox) {
     ctx.lineWidth = 1;
