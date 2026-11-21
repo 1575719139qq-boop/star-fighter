@@ -1345,17 +1345,24 @@ function addPlanet(a, dist) {
 // 沿某个方向找到最外层岩层（地表）离星球中心的距离
 function surfaceR(p, a) { for (let d = p.half; d > 0; d -= 4) if (planetSolidAt(p.x + Math.cos(a) * d, p.y + Math.sin(a) * d) === p) return d; return p.R * .5; }
 // 布局：8 个地基均匀绕地表一圈（第一个朝向玩家来的方向）；敌方据点在地基之间；核心埋在背面地下
+// 布局：我方基地在玩家来的这一侧——6 个地基排成一道整齐的弧（同一高度），弧中间上方是指挥中心（改装台，自带）；
+// 敌方据点全在背面：核心埋在正背面地下，两个护盾发生器在核心两侧，炮台在更外侧，和我方基地隔开
+const BASE_ARC = 1.05, BASE_N = 6;
 function planetLayout(p, a0) {
   const hpK = 1 + .45 * p.i;
-  for (let k = 0; k < 8; k++) { const a = a0 + k * TAU / 8, d = surfaceR(p, a) + 40; p.sites.push({ p, k, a, dx: Math.cos(a) * d, dy: Math.sin(a) * d, b: null, lv: 0, t: 0, hp: 0, max: 0, aim: a, armed: true, hit: 0 }); }
-  // 三个地基下面保证有浅层矿脉，给采矿机用
-  for (const k of [1, 2, 6].sort(() => Math.random() - .5).slice(0, 3)) { const s = p.sites[k], d = surfaceR(p, s.a) - rnd(50, 80); p.veins.push({ x: Math.cos(s.a) * d, y: Math.sin(s.a) * d, r: rnd(20, 28), left: 36, found: false }); }
-  for (const s of p.sites) { let best = null, bd = 170; for (const v of p.veins) { const d = Math.hypot(v.x - s.dx, v.y - s.dy); if (d < bd) { bd = d; best = v; } } s.vein = best; }
-  const foeAt = (k, type) => { const a = a0 + Math.PI / 8 + k * TAU / 8, d = surfaceR(p, a) + 12, max = (type === 'gen' ? 120 : 70) * hpK; p.foes.push({ type, a, dx: Math.cos(a) * d, dy: Math.sin(a) * d, r: type === 'gen' ? 20 : 16, hp: max, max, t: rnd(1, 2.5), aim: a, p, flash: 0 }); };
-  foeAt(3, 'gen'); foeAt(4, 'gen');
-  for (const k of [2, 5, 1, 6].slice(0, 2 + Math.min(2, p.i))) foeAt(k, 'tur');
-  const ca = a0 + Math.PI, cd = Math.max(p.R * .3, surfaceR(p, ca) - 130), cmax = 400 * (1 + .5 * p.i);
-  p.core = { type: 'core', a: ca, dx: Math.cos(ca) * cd, dy: Math.sin(ca) * cd, r: 26, hp: cmax, max: cmax, p, open: false, revealed: false, flash: 0 };
+  let far = 0; for (let j = 0; j <= 24; j++) far = Math.max(far, surfaceR(p, a0 - BASE_ARC - .15 + j / 24 * (BASE_ARC + .15) * 2));
+  const rr = far + 46; p.baseA = a0; p.baseR = rr;
+  for (let k = 0; k < BASE_N; k++) { const a = a0 - BASE_ARC + k * BASE_ARC * 2 / (BASE_N - 1); p.sites.push({ p, k, a, dx: Math.cos(a) * rr, dy: Math.sin(a) * rr, b: null, lv: 0, t: 0, hp: 0, max: 0, aim: a, armed: true, hit: 0 }); }
+  const hr = rr + 78; p.sites.push({ p, k: BASE_N, a: a0, dx: Math.cos(a0) * hr, dy: Math.sin(a0) * hr, b: 'mod', lv: 1, t: 0, hp: 1, max: 1, aim: a0, armed: true, hit: 0, hub: true });
+  // 第 2、5 个地基下面保证有浅层矿脉，给采矿机用
+  for (const k of [1, 4]) { const s = p.sites[k], d = surfaceR(p, s.a) - rnd(50, 75); p.veins.push({ x: Math.cos(s.a) * d, y: Math.sin(s.a) * d, r: rnd(20, 28), left: 36, found: false }); }
+  for (const s of p.sites) { if (s.hub) continue; let best = null, bd = 200; for (const v of p.veins) { const d = Math.hypot(v.x - s.dx, v.y - s.dy); if (d < bd) { bd = d; best = v; } } s.vein = best; }
+  const fa = a0 + Math.PI;
+  const foeAt = (off, type) => { const a = fa + off, d = surfaceR(p, a) + 12, max = (type === 'gen' ? 120 : 70) * hpK; p.foes.push({ type, a, dx: Math.cos(a) * d, dy: Math.sin(a) * d, r: type === 'gen' ? 20 : 16, hp: max, max, t: rnd(1, 2.5), aim: a, p, flash: 0 }); };
+  foeAt(-.5, 'gen'); foeAt(.5, 'gen');
+  for (const off of [-.95, .95, -1.3, 1.3].slice(0, 2 + Math.min(2, p.i))) foeAt(off, 'tur');
+  const cd = Math.max(p.R * .3, surfaceR(p, fa) - 130), cmax = 400 * (1 + .5 * p.i);
+  p.core = { type: 'core', a: fa, dx: Math.cos(fa) * cd, dy: Math.sin(fa) * cd, r: 26, hp: cmax, max: cmax, p, open: false, revealed: false, flash: 0 };
 }
 function planetSolidAt(x, y) {
   for (const p of planets) {
@@ -1495,13 +1502,15 @@ const BUILDS = {
   turret: { name: '炮塔', gl: 'turret', c: '255,150,90', cost: [15, 25, 40], hp: 120, desc: lv => `每 ${(1.1 - .25 * (lv - 1)).toFixed(2)} 秒射击一次` },
   silo: { name: '导弹井', gl: 'burst', c: '255,110,90', cost: [25, 40, 60], hp: 120, desc: lv => `每 ${(3.4 - .6 * (lv - 1)).toFixed(1)} 秒轰炸一片敌人` },
   shield: { name: '护盾塔', gl: 'bubble', c: '120,200,255', cost: [20, 32, 50], hp: 160, desc: lv => `半径 ${80 + 20 * lv} 内挡下敌弹` },
-  repair: { name: '维修站', gl: 'cross', c: '110,255,160', cost: [20, 32, 50], hp: 100, desc: lv => `每 ${12 - 3 * (lv - 1)} 秒修 1 格护甲，修理建筑` },
+  repair: { name: '维修站', gl: 'cross', c: '110,255,160', cost: [20, 32, 50], hp: 100, desc: lv => `每 ${12 - 3 * (lv - 1)} 秒修护甲和建筑` },
   miner: { name: '采矿机', gl: 'ore', c: '255,210,90', cost: [12, 20, 32], hp: 100, desc: lv => `每 ${(6 - 1.5 * (lv - 1)).toFixed(1)} 秒产 1 矿石` },
   radar: { name: '雷达', gl: 'crosshair', c: '150,255,230', cost: [15], hp: 80, one: true, desc: () => '显示全部矿脉和核心' },
   beacon: { name: '信标', gl: 'zap', c: '255,230,120', cost: [20, 35, 55], hp: 100, desc: lv => `据点和核心受到伤害 +${20 * lv}%` },
   mod: { name: '改装台', gl: 'wrench', c: '120,220,255', cost: [10], hp: 120, one: true, desc: () => '用矿石强化战机' },
 };
 const BUILD_IDS = Object.keys(BUILDS);
+const BUILD_GROUPS = [['防御', ['turret', 'silo', 'shield']], ['资源', ['miner', 'radar']], ['支援', ['repair', 'beacon']]];
+const BUILD_ORDER = BUILD_GROUPS.flatMap(g => g[1]);   // 空地基菜单的顺序（数字键 1–7 按这个顺序）
 const buildMax = id => BUILDS[id].cost.length;
 const buildCost = (id, lv) => { const c = BUILDS[id].cost[lv - 1]; return c === undefined ? undefined : Math.round(c * (techHas('b2') ? .8 : 1)); };   // 科技「预制建材」：造价八折
 const buildHp = (id, lv) => BUILDS[id].hp * (1 + .5 * (lv - 1));
@@ -1515,7 +1524,7 @@ const MODS = {
 const modCost = id => MODS[id].base + MODS[id].step * (modN[id] || 0);
 const modOk = id => { const m = MODS[id]; return (!m.max || (modN[id] || 0) < m.max) && (!m.cond || m.cond(player)); };
 function siteHit(s, d) {
-  if (!s.b) return; s.hp -= d; s.hit = .15;
+  if (!s.b || s.hub) return;   // 指挥中心打不坏 s.hp -= d; s.hit = .15;
   if (s.hp <= 0) { const p = s.p, x = p.x + s.dx, y = p.y + s.dy; explosion(x, y, 30); floatText(x, y - 30, BUILDS[s.b].name + ' 被摧毁', 13, '#ff8a7a', 1.4); s.b = null; s.lv = 0; s.hp = s.max = 0; }
 }
 // 袭击者：飞向目标建筑自爆
@@ -1568,7 +1577,7 @@ function baseStep(p, dt) {
   }
   p.shells = p.shells.filter(s => !s.dead);
   // 袭击：有建筑之后，每隔一段时间来一小队冲向建筑
-  const live = p.sites.filter(s => s.b);
+  const live = p.sites.filter(s => s.b && !s.hub);
   if (live.length && (p.raidT -= dt) <= 0) {
     p.raidT = Math.max(16, 30 - p.i * 3);
     const s = live[Math.random() * live.length | 0], n = 2 + Math.min(4, p.i + Math.floor(survT / 150));
@@ -1586,7 +1595,7 @@ const buildIds = () => {
   if (!buildCtx) return []; const s = buildCtx.pad, p = buildCtx.p;
   if (s.b === 'mod') return Object.keys(MODS).filter(modOk);
   if (s.b) return [s.b];
-  return BUILD_IDS.filter(id => !(BUILDS[id].one && p.sites.some(o => o.b === id)));
+  return BUILD_ORDER.filter(id => !(BUILDS[id].one && p.sites.some(o => o.b === id)));   // 改装台是指挥中心自带的，不在这里
 };
 const buildBlocked = (s, id) => id === 'miner' && !(s.vein && s.vein.found) ? '需要已发现的矿脉' : '';
 function buildAct(a) {
@@ -1614,10 +1623,16 @@ function drawBuild() {
   drawGlyph('ore', W / 2 - ow / 2 - 10, 172, 16, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(os, W / 2 + 8, 173);
   let bottom = 200;
   if (!mod && !s.b) {
-    // 空地基：两列卡片
-    const cw = (W - 70) / 2, chh = 96;
+    // 空地基：按「防御 / 资源 / 支援」分组，每组两列卡片
+    const cw = (W - 70) / 2, chh = 80, pos = {}; let yy = 194;
+    for (const [gname, list] of BUILD_GROUPS) {
+      const g = list.filter(id => ids.includes(id)); if (!g.length) continue;
+      ctx.textAlign = 'left'; ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText(gname, 32, yy + 7);
+      ctx.strokeStyle = 'rgba(120,170,210,.25)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(64, yy + 7); ctx.lineTo(W - 30, yy + 7); ctx.stroke();
+      yy += 18; g.forEach((id, j) => { pos[id] = [30 + (j % 2) * (cw + 10), yy + Math.floor(j / 2) * (chh + 8)]; }); yy += Math.ceil(g.length / 2) * (chh + 8) + 6;
+    }
     ids.forEach((id, i) => {
-      const d = BUILDS[id], cost = buildCost(id, 1), why = buildBlocked(s, id), ok = !why && ore >= cost, x = 30 + (i % 2) * (cw + 10), y = 196 + Math.floor(i / 2) * (chh + 10), col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
+      const d = BUILDS[id], cost = buildCost(id, 1), why = buildBlocked(s, id), ok = !why && ore >= cost, x = pos[id][0], y = pos[id][1], col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
       uiRects.push({ x, y, w: cw, h: chh, act: 'b:' + id });
       ctx.fillStyle = ok ? 'rgba(10,30,50,.94)' : 'rgba(10,20,30,.85)'; roundRect(x, y, cw, chh, 8); ctx.fill();
       ctx.strokeStyle = ok ? col : 'rgba(150,160,170,.45)'; ctx.lineWidth = 1.5; ctx.stroke();
@@ -1627,7 +1642,7 @@ function drawBuild() {
       ctx.font = `11px ${FONT}`; ctx.fillStyle = why ? '#ff9a8a' : ok ? '#cfe2f0' : 'rgba(190,200,210,.5)'; wrapText(why || d.desc(1), x + 10, y + 64, cw - 18, 15);
       ctx.textAlign = 'right'; ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.fillText(`[${i + 1}]`, x + cw - 8, y + 14);
     });
-    bottom = 196 + Math.ceil(ids.length / 2) * (chh + 10);
+    bottom = yy - 4;
   } else {
     const ch = 72, gap = ch + 12;
     ids.forEach((id, i) => {
@@ -1662,7 +1677,7 @@ function drawSite(s, x, y) {
   const d = s.b && BUILDS[s.b], col = d ? d.c : '255,210,140', lv = s.lv;
   ctx.save(); ctx.translate(x, y);
   ctx.globalCompositeOperation = 'lighter'; drawGlow(0, 0, 64, col, s.b ? .3 : .16 + .08 * Math.sin(time * 4)); ctx.globalCompositeOperation = 'source-over';
-  const R = 20 + (lv >= 3 ? 3 : lv >= 2 ? 1.5 : 0);
+  const R = s.hub ? 27 : 20 + (lv >= 3 ? 3 : lv >= 2 ? 1.5 : 0);
   ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = i / 6 * TAU + Math.PI / 6; ctx.lineTo(Math.cos(a) * R, Math.sin(a) * R); } ctx.closePath();
   ctx.fillStyle = s.hit > 0 ? 'rgba(120,40,40,.95)' : 'rgba(14,22,34,.92)'; ctx.fill();
   if (!s.b) { ctx.setLineDash([5, 4]); ctx.lineDashOffset = -time * 10; }
@@ -1693,8 +1708,9 @@ function drawSite(s, x, y) {
   } else if (s.b === 'beacon') {
     ctx.fillStyle = '#4a4630'; ctx.beginPath(); ctx.moveTo(0, -14); ctx.lineTo(10, 10); ctx.lineTo(-10, 10); ctx.closePath(); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.globalCompositeOperation = 'lighter'; drawGlow(0, -12, 14 + lv * 6, col, .6 + .3 * Math.sin(time * 5)); ctx.globalCompositeOperation = 'source-over';
-  } else if (s.b === 'mod') drawGlyph('wrench', 0, 0, 22, C);
+  } else if (s.b === 'mod') drawGlyph('wrench', 0, 0, s.hub ? 28 : 22, C);
   ctx.restore();
+  if (s.hub) { ctx.font = `bold 11px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.fillStyle = '#bff4ff'; ctx.strokeText('指挥中心', x, y + 42); ctx.fillText('指挥中心', x, y + 42); return; }
   if (s.b) {
     for (let i = 0; i < lv; i++) { ctx.fillStyle = `rgb(${col})`; ctx.beginPath(); ctx.arc(x - (lv - 1) * 4 + i * 8, y + 30, 2.2, 0, TAU); ctx.fill(); }
     if (s.hp < s.max) { ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - 16, y + 35, 32, 4); ctx.fillStyle = s.hp / s.max > .4 ? '#7dff9a' : '#ff6a5a'; ctx.fillRect(x - 16, y + 35, 32 * Math.max(0, s.hp / s.max), 4); }
@@ -1759,10 +1775,15 @@ function drawPlanets() {
     if (gensAlive(p)) { ctx.save(); ctx.setLineDash([3, 7]); ctx.lineDashOffset = -time * 30; ctx.strokeStyle = 'rgba(190,120,255,.4)'; ctx.lineWidth = 2; ctx.beginPath(); for (const f of p.foes) if (f.type === 'gen' && f.hp > 0) { ctx.moveTo(p.x + f.dx, p.y + f.dy); ctx.lineTo(p.x + p.core.dx, p.y + p.core.dy); } ctx.stroke(); ctx.restore(); }
     drawCore(p);
     for (const f of p.foes) if (f.hp > 0) drawFoe(p, f);
-    // 基地管线：相邻的建筑连起来
-    ctx.strokeStyle = 'rgba(140,200,230,.4)'; ctx.lineWidth = 3; ctx.beginPath();
-    for (let k = 0; k < 8; k++) { const a = p.sites[k], b = p.sites[(k + 1) % 8]; if (a.b && b.b) { ctx.moveTo(p.x + a.dx, p.y + a.dy); ctx.lineTo(p.x + b.dx, p.y + b.dy); } }
-    ctx.stroke();
+    // 基地环线：沿地基那道弧画一条轨道，建好的相邻两座之间亮起来；指挥中心连到弧中间
+    if (p.baseR) {
+      const a0 = p.baseA, A = BASE_ARC + .12, br = p.baseR;
+      ctx.strokeStyle = 'rgba(120,200,240,.18)'; ctx.lineWidth = 10; ctx.beginPath(); ctx.arc(p.x, p.y, br, a0 - A, a0 + A); ctx.stroke();
+      ctx.strokeStyle = 'rgba(140,210,240,.45)'; ctx.lineWidth = 2; ctx.setLineDash([8, 7]); ctx.beginPath(); ctx.arc(p.x, p.y, br, a0 - A, a0 + A); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = 'rgba(150,230,255,.75)'; ctx.lineWidth = 3;
+      for (let k = 0; k < BASE_N - 1; k++) { const s1 = p.sites[k], s2 = p.sites[k + 1]; if (s1.b && s2.b) { ctx.beginPath(); ctx.arc(p.x, p.y, br, s1.a, s2.a); ctx.stroke(); } }
+      const hub = p.sites[BASE_N]; ctx.strokeStyle = 'rgba(140,210,240,.5)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(p.x + Math.cos(a0) * br, p.y + Math.sin(a0) * br); ctx.lineTo(p.x + hub.dx, p.y + hub.dy); ctx.stroke();
+    }
     for (const s of p.sites) {
       const x = p.x + s.dx, y = p.y + s.dy; if (x < -140 || x > W + 140 || y < -140 || y > H + 140) continue;
       if (s.b === 'shield') { const R = 80 + 20 * s.lv; ctx.fillStyle = 'rgba(120,200,255,.06)'; ctx.strokeStyle = 'rgba(120,200,255,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, R, 0, TAU); ctx.fill(); ctx.stroke(); }
