@@ -526,6 +526,31 @@ function initAudio() {
   if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { } }
   if (actx && actx.state === 'suspended') actx.resume();
 }
+// ================= 背景音乐：主菜单 / 战斗两首（music/ 目录），无缝循环，切换时淡入淡出；M 键一起静音 =================
+const BGM_SRC = { menu: 'music/menu.mp3', battle: 'music/battle.mp3' }, BGM_VOL = .32;
+const bgm = { buf: {}, cur: null, src: null, gain: null, vol: -1, loading: false };
+function bgmLoad() {
+  if (bgm.loading || !actx) return; bgm.loading = true;
+  for (const k in BGM_SRC) fetch(BGM_SRC[k]).then(r => r.ok ? r.arrayBuffer() : Promise.reject()).then(a => actx.decodeAudioData(a)).then(b => { bgm.buf[k] = b; }).catch(() => { });
+}
+const bgmWant = () => state === 'play' || state === 'choose' || state === 'build' || state === 'paused' ? 'battle' : 'menu';
+function bgmUpdate() {
+  if (!actx || actx.state !== 'running') return; bgmLoad();
+  const want = muted ? null : bgmWant();
+  if (want === bgm.cur) {
+    const v = state === 'paused' ? BGM_VOL * .4 : BGM_VOL;   // 暂停时音乐压低
+    if (bgm.gain && v !== bgm.vol) { bgm.vol = v; bgm.gain.gain.setTargetAtTime(v, actx.currentTime, .15); }
+    return;
+  }
+  if (want && !bgm.buf[want]) return;   // 还在加载
+  const t = actx.currentTime;
+  if (bgm.src) { const g = bgm.gain; g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + .8); bgm.src.stop(t + .85); }
+  bgm.src = bgm.gain = null; bgm.cur = want; bgm.vol = BGM_VOL;
+  if (!want) return;
+  const s = actx.createBufferSource(), g = actx.createGain(); s.buffer = bgm.buf[want]; s.loop = true;
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(BGM_VOL, t + 1.2); s.connect(g); g.connect(actx.destination); s.start(t);
+  bgm.src = s; bgm.gain = g;
+}
 function tone(f, d, type = 'square', v = .06, slide = 0, delay = 0) {
   if (!actx || muted) return;
   const t = actx.currentTime + delay, o = actx.createOscillator(), g = actx.createGain();
@@ -2089,7 +2114,7 @@ function togglePause() {
 // ================= 输入 =================
 const keys = {};
 addEventListener('keydown', e => {
-  keys[e.code] = true;
+  keys[e.code] = true; initAudio();
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   if (state === 'codex') { if (e.code === 'Escape' || e.code === 'KeyL' || e.code === 'Enter') state = 'title'; if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') codexPage = (codexPage + (e.code === 'ArrowLeft' ? CODEX.length - 1 : 1)) % CODEX.length; return; }
   if (state === 'title' && e.code === 'KeyL') { state = 'codex'; return; }
@@ -7133,6 +7158,7 @@ function frame(now) {
   else if (state === 'title' || state === 'starmap' || state === 'codex' || state === 'hangar' || state === 'gacha') { time += dt; bgUpdate(dt); gachaT += dt; if (gachaMsgT > 0) gachaMsgT -= dt; }
   else if (state === 'choose' || state === 'build') time += dt;
   else if (state === 'over') { time += dt; phaseT += dt; bgUpdate(dt * .5); updateParts(dt); }
+  bgmUpdate();
   render();
   updateGMInfo(dt);
   requestAnimationFrame(frame);
