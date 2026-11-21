@@ -928,6 +928,7 @@ function restartRun() { if (SURV) startSurvival(); else startGame(); }
 // 一局结束（阵亡 / 主动结束 / 占领星球）：结算星晶和纪录
 function finishRun() {
   state = 'over'; phaseT = 0; drag = null; rewardRun();
+  if (SURV && PLANET) planetHarvest();
   if (SURV && survT > survBest) { survBest = survT; try { localStorage.setItem('starFighterSurvBest', survBest); } catch (e) { } }
   if (score > best) { best = score; try { localStorage.setItem('starFighterBest', best); } catch (e) { } }
 }
@@ -957,7 +958,7 @@ function worldShift(dx, dy) {
 // 玩家移动：只用键盘（方向键 / WASD，Shift 慢速）；触屏设备仍可用虚拟摇杆，鼠标不控制移动
 function survMove(dt, dx, dy) {
   const P = player; let vx = 0, vy = 0;
-  const base = SURV_SPEED * survMoveK();
+  const base = SURV_SPEED * survMoveK() * planetSlowK();
   if (dx || dy) { const l = Math.hypot(dx, dy), sp = keys.ShiftLeft || keys.ShiftRight ? base * .55 : base; vx = dx / l * sp; vy = dy / l * sp; }
   else if (P.joy) { vx = P.joy.x * base; vy = P.joy.y * base; }
   P.mvx = vx; P.mvy = vy;
@@ -970,11 +971,19 @@ function survAim(dt) {
   for (const e of enemies) { if (e.hp <= 0 || e.phased) continue; const d = (e.x - cx) ** 2 + (e.y - cy) ** 2; if (d < bd) { bd = d; best = e; } }
   // 首领和它的炮台也算瞄准目标
   if (boss && !boss.entering && boss.dying <= 0) for (const t of [...boss.turrets.filter(t => t.hp > 0).map(t => ({ x: boss.x + t.dx, y: boss.y + t.dy })), { x: boss.x, y: boss.y + boss.def.oy }]) { const d = (t.x - cx) ** 2 + (t.y - cy) ** 2; if (d < bd) { bd = d; best = t; } }
+  // 星球据点也算瞄准目标（核心挖开后才算）
+  if (PLANET) for (const t of targets()) if (t.kind === 'p') { const d = ((t.x - cx) ** 2 + (t.y - cy) ** 2) * (t.ref.type === 'core' ? .25 : 1); if (d < bd) { bd = d; best = t; } }
   if (best) P.aimA = Math.atan2(best.x - cx, -(best.y - cy));
   else if (P.mvx || P.mvy) P.aimA = Math.atan2(P.mvx, -P.mvy);
   if (P.aimA === undefined) P.aimA = 0;
   const diff = ((P.aimA - P.ang + Math.PI * 3) % TAU) - Math.PI;
   P.ang += clamp(diff, -11 * dt, 11 * dt);
+}
+let SF_ROT = null;
+function foeXY(f) {
+  let x = f.p.x + f.dx, y = f.p.y + f.dy;
+  if (SF_ROT) { const r = SF_ROT, dx = x - r.cx, dy = y - r.cy; x = r.cx + dx * r.c - dy * r.s; y = r.cy + dx * r.s + dy * r.c; }
+  return { x, y };
 }
 // 在"机头朝上"的坐标系里执行 fn（旋转中心是驾驶舱 = 受击点）
 function survFrame(fn) {
@@ -992,7 +1001,9 @@ function survFrame(fn) {
   };
   const n = { b: pBullets.length, p: parts.length, t: texts.length, k: pickups.length, w: wrecks.length, s: stains.length, h: holes.length, f: subFx.length }, rail = P.rail;
   turn(-sn);
+  SF_ROT = { cx, cy, c, s: -sn };   // 星球据点不跟着旋转，目标坐标在这里换算
   fn();
+  SF_ROT = null;
   turn(sn);
   for (let i = n.b; i < pBullets.length; i++) { const b = pBullets[i]; R(b, 'x', 'y', sn); V(b, 'vx', 'vy', sn); b.hx = sn; b.hy = -c; if (b.helix) { b.cx = b.x; b.cy = b.y; } }
   for (let i = n.p; i < parts.length; i++) { const p = parts[i]; R(p, 'x', 'y', sn); V(p, 'vx', 'vy', sn); R(p, 'x2', 'y2', sn); }
@@ -1074,7 +1085,7 @@ function survBossDown(x, y) {
 // ================= 星球占领（原型） =================
 // 巨大的星球：形状随机（起伏 / 月牙 / 双子 / 空洞），子弹打上去会炸出坑洞，可以一路挖穿；
 // 星球挡住玩家、敌机和敌弹；飞进轨道圈停留读条，读满即占领，然后远处出现下一颗
-const PLANET_CAP_T = 40, PLANET_CELL = 4, PLANET_ROCKS = new Set(['rock', 'junk', 'scrap', 'shard', 'pod']);
+const PLANET_CELL = 4, PLANET_ROCKS = new Set(['rock', 'junk', 'scrap', 'shard', 'pod']);
 const PLANET_PAL = [
   { name: '赤岩星', base: ['#5a2216', '#a8492c'], blob: ['#d07a48', '#2a0e08'], rim: '30,8,4', dust: '255,150,90', atm: '255,110,70' },
   { name: '霜蓝星', base: ['#24405a', '#7aa3c2'], blob: ['#bfe2f8', '#101e2c'], rim: '6,14,24', dust: '180,225,255', atm: '120,190,255' },
@@ -1082,24 +1093,37 @@ const PLANET_PAL = [
   { name: '沙丘星', base: ['#5e4520', '#c9a35a'], blob: ['#ead08a', '#3c2a10'], rim: '26,16,4', dust: '255,225,150', atm: '255,210,120' },
 ];
 const PLANET_SHAPES = ['lumpy', 'crescent', 'twin', 'caves'];
-// 每种星球占领后给之后每局的永久加成（同种可叠加；护甲最多 +3）
+// 已占领星球（存档）给之后每局的永久加成；基地等级越高加成越大（护甲合计最多 +3）
 const PLANET_BONUS = [
-  { gl: 'sword', c: '255,130,90', t: n => `火力 +${10 * n}%` },
-  { gl: 'plate', c: '140,200,255', t: n => `护甲 +${Math.min(3, n)}` },
-  { gl: 'gem', c: '130,240,150', t: n => `经验 +${20 * n}%` },
-  { gl: 'ore', c: '255,210,110', t: n => `矿石 +${50 * n}%` },
+  { gl: 'sword', c: '255,130,90', t: v => `火力 +${Math.round(v)}%` },
+  { gl: 'plate', c: '140,200,255', t: v => `护甲 +${v}` },
+  { gl: 'gem', c: '130,240,150', t: v => `经验 +${Math.round(v)}%` },
+  { gl: 'ore', c: '255,210,110', t: v => `矿石 +${Math.round(v)}%` },
 ];
-function planetBonusCount() { const c = [0, 0, 0, 0]; for (const s of save.planets) c[s.k % 4]++; return c; }
+const PLANET_BONUS_BASE = [10, 1, 20, 50], BASE_MAX = 5;
+const baseLvK = lv => 1 + .5 * ((lv || 1) - 1);
+function planetBonusOf(s) { const k = s.k % 4; return k === 1 ? Math.floor(baseLvK(s.lv)) : PLANET_BONUS_BASE[k] * baseLvK(s.lv); }
+function planetBonusTotals() { const t = [0, 0, 0, 0]; for (const s of save.planets) t[s.k % 4] += planetBonusOf(s); t[1] = Math.min(3, t[1]); return t; }
 function planetBonusApply(P) {
-  const c = planetBonusCount();
-  P.s.dmgMul *= 1 + .1 * c[0];
-  P.maxArmor += Math.min(3, c[1]); P.armor = P.maxArmor;
-  P.s.xpMul += .2 * c[2];
-  oreMul = 1 + .5 * c[3];
+  const t = planetBonusTotals();
+  P.s.dmgMul *= 1 + t[0] / 100;
+  P.maxArmor += t[1]; P.armor = P.maxArmor;
+  P.s.xpMul += t[2] / 100;
+  oreMul = 1 + t[3] / 100;
 }
-  // （星球玩法已并入生存模式）
+// 局外产出：每局结束，已占领星球按基地等级产出矿石和星晶；本局没花完的矿石也存进仓库
+const baseIncome = s => ({ ore: 4 * (s.lv || 1), cr: 10 * (s.lv || 1) });
+const baseUpCost = lv => 30 * lv;
+function planetHarvest() {
+  let o = 0, c = 0; for (const s of save.planets) { const r = baseIncome(s); o += r.ore; c += r.cr; }
+  const left = Math.floor(ore); save.ore = (save.ore || 0) + o + left; save.crystals += c; player.earned = (player.earned || 0) + c;
+  save.lastHarvest = { ore: o, cr: c, left }; ore = 0; persist();
+}
+// 星球环境：在目标星球的轨道圈里生效
+const planetTarget = () => PLANET ? planets.find(p => !p.owned) : null;
+function planetSlowK() { const t = planetTarget(); return t && t.kind === 1 && t.inOrbit ? .72 : 1; }   // 霜蓝星：移动变慢
 function addPlanet(a, dist) {
-  const i = planetN++, pal = PLANET_PAL[i % PLANET_PAL.length], shape = PLANET_SHAPES[i % PLANET_SHAPES.length];
+  const i = planetN++, kind = save.nextKind != null ? save.nextKind % 4 : i % 4, pal = PLANET_PAL[kind], shape = PLANET_SHAPES[i % PLANET_SHAPES.length];
   const R = Math.min(680, 480 + i * 40) * rnd(.95, 1.05), half = Math.ceil(R * 1.3) + 8, S = half * 2, c = half;
   const cv = document.createElement('canvas'); cv.width = cv.height = S; const g = cv.getContext('2d');
   // 起伏的闭合轮廓：多个正弦叠加的半径
@@ -1132,7 +1156,6 @@ function addPlanet(a, dist) {
     g.globalAlpha = .12; g.strokeStyle = '#fff'; g.lineWidth = Math.max(1.5, r * .12); g.beginPath(); g.arc(x, y, r * .95, .2, 2.2); g.stroke();
   }
   // 每种星球自己的地貌：赤岩星熔岩裂缝、霜蓝星冰盖和冰裂、翠林星森林和湖泊、沙丘星沙纹
-  const kind = i % PLANET_PAL.length;
   g.lineCap = 'round'; g.lineJoin = 'round';
   if (kind === 0) {
     for (let k = 0; k < 10; k++) {
@@ -1163,8 +1186,26 @@ function addPlanet(a, dist) {
     const a2 = rnd(0, TAU), d2 = R * rnd(.25, .85), vx = c + Math.cos(a2) * d2, vy = c + Math.sin(a2) * d2;
     if (mask[(vy / PLANET_CELL | 0) * mw + (vx / PLANET_CELL | 0)]) { veins.push({ x: vx - c, y: vy - c, r: rnd(18, 30), left: 30 + (Math.random() * 15 | 0), found: false }); break; }
   }
-  const P = player;
-  planets.push({ kind, bornT: survT, k0: P.kills, ore0: oreGot, hurt: false, orbitT0: -1, veins, pads: null, x: P.x + Math.cos(a) * dist, y: P.y + HIT_OY + Math.sin(a) * dist, R, half, cv, g, mask, mw, pal, name: pal.name + '-' + (i + 1), orbit: R * 1.25 + 150, cap: 0, owned: false, inOrbit: false });
+  const P = player, x = P.x + Math.cos(a) * dist, y = P.y + HIT_OY + Math.sin(a) * dist;
+  const p = { kind, i, bornT: survT, k0: P.kills, ore0: oreGot, hurt: false, orbitT0: -1, veins, sites: [], foes: [], core: null, shells: [], x, y, R, half, cv, g, mask, mw, pal,
+    name: pal.name + '-' + (i + 1), orbit: R * 1.25 + 150, owned: false, inOrbit: false, envT: 2, raidT: 35 };
+  planets.push(p);
+  planetLayout(p, a + Math.PI);
+}
+// 沿某个方向找到最外层岩层（地表）离星球中心的距离
+function surfaceR(p, a) { for (let d = p.half; d > 0; d -= 4) if (planetSolidAt(p.x + Math.cos(a) * d, p.y + Math.sin(a) * d) === p) return d; return p.R * .5; }
+// 布局：8 个地基均匀绕地表一圈（第一个朝向玩家来的方向）；敌方据点在地基之间；核心埋在背面地下
+function planetLayout(p, a0) {
+  const hpK = 1 + .45 * p.i;
+  for (let k = 0; k < 8; k++) { const a = a0 + k * TAU / 8, d = surfaceR(p, a) + 40; p.sites.push({ p, k, a, dx: Math.cos(a) * d, dy: Math.sin(a) * d, b: null, lv: 0, t: 0, hp: 0, max: 0, aim: a, armed: true, hit: 0 }); }
+  // 三个地基下面保证有浅层矿脉，给采矿机用
+  for (const k of [1, 2, 6].sort(() => Math.random() - .5).slice(0, 3)) { const s = p.sites[k], d = surfaceR(p, s.a) - rnd(50, 80); p.veins.push({ x: Math.cos(s.a) * d, y: Math.sin(s.a) * d, r: rnd(20, 28), left: 36, found: false }); }
+  for (const s of p.sites) { let best = null, bd = 170; for (const v of p.veins) { const d = Math.hypot(v.x - s.dx, v.y - s.dy); if (d < bd) { bd = d; best = v; } } s.vein = best; }
+  const foeAt = (k, type) => { const a = a0 + Math.PI / 8 + k * TAU / 8, d = surfaceR(p, a) + 12, max = (type === 'gen' ? 120 : 70) * hpK; p.foes.push({ type, a, dx: Math.cos(a) * d, dy: Math.sin(a) * d, r: type === 'gen' ? 20 : 16, hp: max, max, t: rnd(1, 2.5), aim: a, p, flash: 0 }); };
+  foeAt(3, 'gen'); foeAt(4, 'gen');
+  for (const k of [2, 5, 1, 6].slice(0, 2 + Math.min(2, p.i))) foeAt(k, 'tur');
+  const ca = a0 + Math.PI, cd = Math.max(p.R * .3, surfaceR(p, ca) - 130), cmax = 400 * (1 + .5 * p.i);
+  p.core = { type: 'core', a: ca, dx: Math.cos(ca) * cd, dy: Math.sin(ca) * cd, r: 26, hp: cmax, max: cmax, p, open: false, revealed: false, flash: 0 };
 }
 function planetSolidAt(x, y) {
   for (const p of planets) {
@@ -1174,10 +1215,9 @@ function planetSolidAt(x, y) {
   }
   return null;
 }
-// 炸出坑洞：贴图挖掉一个圆，坑边一圈压暗；遮罩同步清空
 function dropOre(x, y, v) { pickups.push({ x, y, k: 'O', v, t: 0, vy: 0 }); }
+// 炸出坑洞：贴图挖掉一个圆，坑边一圈压暗；遮罩同步清空；挖到核心旁边核心就露出来
 function planetCarve(p, x, y, r, dig) {
-  // 玩家打的坑：偶尔崩出矿石；挖到矿脉附近矿脉发光，挖开就掉一把
   if (dig) {
     for (const v of p.veins) {
       if (v.left <= 0) continue; const d = Math.hypot(p.x + v.x - x, p.y + v.y - y);
@@ -1186,6 +1226,7 @@ function planetCarve(p, x, y, r, dig) {
     }
     if (Math.random() < .05) dropOre(x, y, 1);
   }
+  const c = p.core; if (c && !c.open && Math.hypot(p.x + c.dx - x, p.y + c.dy - y) < r + c.r + 8) { c.open = true; floatText(p.x + c.dx, p.y + c.dy - 40, '核心暴露', 15, '#ff8a9a', 1.4); }
   const lx = x - p.x + p.half, ly = y - p.y + p.half, g = p.g;
   g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000'; g.beginPath(); g.arc(lx, ly, r, 0, TAU); g.fill();
   g.globalCompositeOperation = 'source-atop';
@@ -1196,24 +1237,73 @@ function planetCarve(p, x, y, r, dig) {
   for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) { const dx = cx * C + 2 - lx, dy = cy * C + 2 - ly; if (dx * dx + dy * dy < r * r) p.mask[cy * p.mw + cx] = 0; }
   if (Math.random() < .5) addPart({ t: 'glow', x, y, vx: 0, vy: 0, life: .25, max: .25, size: r * 3, c: p.pal.dust });
 }
+// ================= 敌方据点：炮台、护盾发生器、地下核心 =================
+const gensAlive = p => p.foes.some(f => f.type === 'gen' && f.hp > 0);
+function beaconLv(p) { let n = 0; for (const s of p.sites) if (s.b === 'beacon') n += s.lv; return Math.min(3, n); }
+function foeHit(f, d) {
+  if (f.hp <= 0) return;
+  const p = f.p, x = p.x + f.dx, y = p.y + f.dy;
+  if (f.type === 'core' && gensAlive(p)) { if (Math.random() < .3) hitSpark(x + rnd(-20, 20), y + rnd(-20, 20), '190,120,255'); return; }   // 护盾没破，核心不掉血
+  f.hp -= d * (1 + .2 * beaconLv(p)); f.flash = .08;
+  if (f.hp <= 0) foeDie(f);
+}
+function foeDie(f) {
+  const p = f.p, x = p.x + f.dx, y = p.y + f.dy, core = f.type === 'core';
+  f.hp = 0; explosion(x, y, core ? 70 : 34); shake = Math.max(shake, core ? 16 : 6); noise(.4, .2, 500);
+  if (core) { flash = .6; for (let k = 0; k < 8; k++) { const a = k / 8 * TAU; explosion(x + Math.cos(a) * 50, y + Math.sin(a) * 50, 30); } planetCaptured(p); return; }
+  for (let k = 0; k < 3; k++) dropOre(x + rnd(-14, 14), y + rnd(-14, 14), 1);
+  dropGem(x, y, 15 + 5 * p.i);
+  if (f.type === 'gen' && !gensAlive(p)) floatText(W / 2, SURV_Y - 150, '护盾解除', 18, '#ff9ab0', 2.2);
+}
+// 子弹打到据点（在打到岩层之前判定）
+function bulletHitFoe(p, b) {
+  const list = p.core.open ? p.foes.concat(p.core) : p.foes;
+  for (const f of list) {
+    if (f.hp <= 0) continue; const x = p.x + f.dx, y = p.y + f.dy;
+    if ((b.x - x) ** 2 + (b.y - y) ** 2 < (f.r + 5) ** 2) { applyHit({ kind: 'p', ref: f }, b.dmg || 1, b.x, b.y); b.dead = true; return true; }
+  }
+  return false;
+}
+function foeStep(p, dt) {
+  const P = player, hx = P.x, hy = P.y + HIT_OY;
+  for (const f of p.foes) {
+    if (f.flash > 0) f.flash -= dt;
+    if (f.type !== 'tur' || f.hp <= 0) continue;
+    const fx = p.x + f.dx, fy = p.y + f.dy; let tx = null, ty = 0;
+    if (Math.hypot(hx - fx, hy - fy) < 470) { tx = hx; ty = hy; }
+    else { let bd = 320; for (const s of p.sites) { if (!s.b) continue; const sx = p.x + s.dx, sy = p.y + s.dy, d = Math.hypot(sx - fx, sy - fy); if (d < bd) { bd = d; tx = sx; ty = sy; } } }   // 玩家不在附近就打建筑
+    if (tx === null) continue;
+    f.aim = Math.atan2(ty - fy, tx - fx); f.t -= dt;
+    if (f.t <= 0) { f.t = Math.max(1, 1.7 - p.i * .15); const ox = fx + Math.cos(f.aim) * 18, oy = fy + Math.sin(f.aim) * 18; eShot(ox, oy, f.aim, 200); if (p.i >= 2) { eShot(ox, oy, f.aim - .2, 200); eShot(ox, oy, f.aim + .2, 200); } }
+  }
+  if (p.core.flash > 0) p.core.flash -= dt;
+}
+// 环境：赤岩星岩浆喷发、翠林星虫群从地表涌出（霜蓝星减速见 planetSlowK，沙丘星沙暴见 drawPlanetEnv）
+function planetEnv(p, dt) {
+  if ((p.envT -= dt) > 0) return;
+  if (p.kind === 0) { p.envT = 3.2; const h = hitPt(); survFx.push({ k: 'shell', x: h.x + rnd(-70, 70), y: h.y + rnd(-70, 70), t: 0, delay: 1.3, r: 52 }); }
+  else if (p.kind === 2) { p.envT = 7; const a = Math.atan2(p.y - player.y, p.x - player.x); for (let k = 0; k < 4; k++) survSpawn('swarm', a + rnd(-.5, .5)); }
+  else p.envT = 1;
+}
 function planetStep(dt) {
   if (!PLANET) return;
-  const P = player;
-  // 玩家子弹：打到岩层炸出坑（穿甲弹、镰刃继续往里钻），火箭的坑最大
+  const P = player, tp = planetTarget();
+  // 玩家子弹：先判定据点，再打岩层炸坑（穿甲弹、镰刃继续往里钻，火箭坑最大）
   for (const b of pBullets) {
-    if (b.dead || b.tur) continue; const p = planetSolidAt(b.x, b.y); if (!p) continue;
+    if (b.dead) continue;
+    if (tp && bulletHitFoe(tp, b)) continue;
+    if (b.tur) continue;
+    const p = planetSolidAt(b.x, b.y); if (!p) continue;
     planetCarve(p, b.x, b.y, b.rocket ? 40 : b.he ? 16 : b.mis ? 13 : b.wave ? 12 : b.ap ? 11 : b.pellet || b.wing ? 6 : 8, true);
     if (!b.ap && !b.wave) b.dead = true;
   }
   for (const b of eBullets) { if (b.dead) continue; const p = planetSolidAt(b.x, b.y); if (p) { b.dead = true; planetCarve(p, b.x, b.y, 4); } }
-  // 敌机撞上岩层：沿离开星球中心的方向推出去；陨石 / 残骸直接撞碎，砸出大坑
   for (const e of enemies) {
     if (e.hp <= 0) continue; const p = planetSolidAt(e.x, e.y); if (!p) continue;
     if (PLANET_ROCKS.has(e.type) && e.noG) { planetCarve(p, e.x, e.y, 26 + e.r); explosion(e.x, e.y, 30); e.hp = 0; continue; }
     const dx = e.x - p.x, dy = e.y - p.y, d = Math.hypot(dx, dy) || 1, nx = dx / d, ny = dy / d;
     for (let k = 1; k <= 30; k++) if (!planetSolidAt(e.x + nx * k * 5, e.y + ny * k * 5)) { e.x += nx * k * 5; e.y += ny * k * 5; e.x0 = e.x; break; }
   }
-  // 玩家撞上岩层：整个世界反向平移，把玩家推出来（机身半径约 15）
   if (!P.dead) {
     const hit = (x, y) => { if (planetSolidAt(x, y)) return true; for (let i = 0; i < 8; i++) { const a = i / 8 * TAU; if (planetSolidAt(x + Math.cos(a) * 15, y + Math.sin(a) * 15)) return true; } return false; };
     const hx = P.x, hy = P.y + HIT_OY;
@@ -1223,39 +1313,41 @@ function planetStep(dt) {
       for (let k = 1; k <= 40; k++) if (!hit(hx + nx * k * 3, hy + ny * k * 3)) { worldShift(-nx * k * 3, -ny * k * 3); break; }
     }
   }
-  // 占领读条：在轨道圈里停留累积，离开会慢慢回落；读条期间敌人刷得更快
-  const t = planets.find(p => !p.owned);
-  if (t && !P.dead) {
-    t.inOrbit = Math.hypot(P.x - t.x, P.y + HIT_OY - t.y) < t.orbit;
-    if (t.inOrbit) {
-      // 第一次进入轨道：地表出现建造点和改装台，用矿石建防御帮你守住读条
-      if (!t.pads) { planetPads(t); t.orbitT0 = survT; floatText(W / 2, SURV_Y - 140, '出现建造点', 14, '#ffd28a', 2.4); }
-      t.cap += dt / PLANET_CAP_T; survSpawnT -= dt * .7; if (t.cap >= 1) planetCaptured(t);
-    }
-    else t.cap = Math.max(0, t.cap - dt / PLANET_CAP_T * .35);
+  if (tp && !P.dead) {
+    tp.inOrbit = Math.hypot(P.x - tp.x, P.y + HIT_OY - tp.y) < tp.orbit;
+    if (tp.inOrbit && tp.orbitT0 < 0) { tp.orbitT0 = survT; floatText(W / 2, SURV_Y - 150, tp.name, 20, `rgb(${tp.pal.atm})`, 2); }
+    if (tp.inOrbit) { survSpawnT -= dt * .4; planetEnv(tp, dt); }
+    foeStep(tp, dt);
   }
-  if (planetNextT > 0 && (planetNextT -= dt) <= 0) { addPlanet(rnd(0, TAU), 2600); floatText(W / 2, SURV_Y - 150, '发现新星球', 18, '#ffd28a', 2.2); }
-  baseStep(dt);
+  if (tp && state === 'play') baseStep(tp, dt);
   pBullets = pBullets.filter(b => !b.dead); eBullets = eBullets.filter(b => !b.dead);
 }
-// 占领完成：记进存档（永久加成），按三颗星发星晶，进入结算画面；这一局到此结束
+// 占领完成（核心被摧毁）：记进存档，按三颗星发星晶，进入结算画面；这一局到此结束
 function planetCaptured(p) {
-  p.owned = true; p.cap = 1; p.inOrbit = false; planetOwned++;
+  if (p.owned) return;
+  p.owned = true; p.inOrbit = false; planetOwned++;
   flash = .5; sfxWin();
   const P = player, took = survT - p.bornT, hold = survT - Math.max(0, p.orbitT0);
-  const stars = [{ n: '占领成功', ok: true }, { n: '无伤占领', ok: !p.hurt }, { n: '速攻', sub: '进入轨道 60 秒内', ok: hold <= 60 }];
+  const stars = [{ n: '占领成功', ok: true }, { n: '无伤占领', ok: !p.hurt }, { n: '速攻', sub: '进入轨道 3 分钟内', ok: hold <= 180 }];
   const got = stars.filter(s => s.ok).length, bonus = STAGE_REWARD + (got - 1) * 100;
-  save.planets.push({ k: p.kind, name: p.name }); save.crystals += bonus; P.earned = (P.earned || 0) + bonus;
+  save.planets.push({ k: p.kind, name: p.name, lv: 1 }); save.nextKind = null; save.crystals += bonus; P.earned = (P.earned || 0) + bonus;
   capRes = { p, took, kills: P.kills - p.k0, ore: Math.floor(oreGot - p.ore0), stars, got, fighter: SKINS[curSkin].name };
   finishRun();
 }
-// ================= 基地：占领后地表上方出现 3 个建造点，花矿石盖建筑 =================
+// ================= 基地：地表一圈 8 个地基，飞上去建造；建筑有血量，会被敌人攻击 =================
 const BUILDS = {
-  turret: { name: '防御炮塔', c: '255,150,90', cost: [15, 25, 40], desc: lv => `每 ${(1.1 - .25 * (lv - 1)).toFixed(2)} 秒射击一次` },
-  repair: { name: '维修站', c: '110,255,160', cost: [20, 32, 50], desc: lv => `轨道内每 ${12 - 3 * (lv - 1)} 秒修 1 格护甲` },
-  miner: { name: '采矿机', c: '255,210,90', cost: [12, 20, 32], desc: lv => `每 ${8 - 2 * (lv - 1)} 秒产 1 矿石` },
+  turret: { name: '炮塔', gl: 'turret', c: '255,150,90', cost: [15, 25, 40], hp: 120, desc: lv => `每 ${(1.1 - .25 * (lv - 1)).toFixed(2)} 秒射击一次` },
+  silo: { name: '导弹井', gl: 'burst', c: '255,110,90', cost: [25, 40, 60], hp: 120, desc: lv => `每 ${(3.4 - .6 * (lv - 1)).toFixed(1)} 秒轰炸一片敌人` },
+  shield: { name: '护盾塔', gl: 'bubble', c: '120,200,255', cost: [20, 32, 50], hp: 160, desc: lv => `半径 ${80 + 20 * lv} 内挡下敌弹` },
+  repair: { name: '维修站', gl: 'cross', c: '110,255,160', cost: [20, 32, 50], hp: 100, desc: lv => `每 ${12 - 3 * (lv - 1)} 秒修 1 格护甲，修理建筑` },
+  miner: { name: '采矿机', gl: 'ore', c: '255,210,90', cost: [12, 20, 32], hp: 100, desc: lv => `每 ${(6 - 1.5 * (lv - 1)).toFixed(1)} 秒产 1 矿石` },
+  radar: { name: '雷达', gl: 'crosshair', c: '150,255,230', cost: [15], hp: 80, one: true, desc: () => '显示全部矿脉和核心' },
+  beacon: { name: '信标', gl: 'zap', c: '255,230,120', cost: [20, 35, 55], hp: 100, desc: lv => `据点和核心受到伤害 +${20 * lv}%` },
+  mod: { name: '改装台', gl: 'wrench', c: '120,220,255', cost: [10], hp: 120, one: true, desc: () => '用矿石强化战机' },
 };
-const BUILD_GL = { turret: 'turret', repair: 'cross', miner: 'ore' };
+const BUILD_IDS = Object.keys(BUILDS);
+const buildMax = id => BUILDS[id].cost.length;
+const buildHp = (id, lv) => BUILDS[id].hp * (1 + .5 * (lv - 1));
 // 改装台：矿石换本局强化，可以反复买，越买越贵
 const MODS = {
   dmg: { name: '火力改装', gl: 'sword', c: '255,130,90', txt: '伤害 +10%', base: 15, step: 10, apply: P => { P.s.dmgMul *= 1.1; } },
@@ -1265,48 +1357,81 @@ const MODS = {
 };
 const modCost = id => MODS[id].base + MODS[id].step * (modN[id] || 0);
 const modOk = id => { const m = MODS[id]; return (!m.max || (modN[id] || 0) < m.max) && (!m.cond || m.cond(player)); };
-// 建造点：在玩家所在方向两侧排开，悬在地表外 46 像素
-function planetPads(p) {
-  p.pads = []; const a0 = Math.atan2(player.y + HIT_OY - p.y, player.x - p.x);
-  for (const off of [-.5, 0, .5]) {
-    const a = a0 + off; let far = 0;
-    for (let d = p.half; d > 0; d -= 4) if (planetSolidAt(p.x + Math.cos(a) * d, p.y + Math.sin(a) * d) === p) { far = d; break; }
-    const d = (far || p.R) + 46; p.pads.push({ dx: Math.cos(a) * d, dy: Math.sin(a) * d, b: null, lv: 0, t: 0, aim: a + Math.PI / 2, armed: true });
-  }
-  // 改装台：在中间建造点再往外一点，管线连到三个建造点
-  const m = p.pads[1], ml = Math.hypot(m.dx, m.dy), md = ml + 100;
-  p.pads.push({ dx: m.dx / ml * md, dy: m.dy / ml * md, b: 'mod', lv: 0, t: 0, aim: 0, armed: true });
+function siteHit(s, d) {
+  if (!s.b) return; s.hp -= d; s.hit = .15;
+  if (s.hp <= 0) { const p = s.p, x = p.x + s.dx, y = p.y + s.dy; explosion(x, y, 30); floatText(x, y - 30, BUILDS[s.b].name + ' 被摧毁', 13, '#ff8a7a', 1.4); s.b = null; s.lv = 0; s.hp = s.max = 0; }
 }
-function baseStep(dt) {
-  const P = player, hx = P.x, hy = P.y + HIT_OY;
-  for (const p of planets) {
-    if (!p.pads) continue;
-    const inOrbit = Math.hypot(hx - p.x, hy - p.y) < p.orbit;
-    for (const pad of p.pads) {
-      const x = p.x + pad.dx, y = p.y + pad.dy, d = Math.hypot(hx - x, hy - y);
-      // 飞到建造点上自动打开建造 / 升级菜单；离开再回来才会再弹
-      if (d > 70) pad.armed = true;
-      else if (d < 34 && pad.armed && (pad.b === 'mod' || pad.lv < 3) && !P.dead && state === 'play') { pad.armed = false; openBuild(p, pad); }
-      if (!pad.b || pad.b === 'mod') continue;
-      pad.t -= dt;
-      if (pad.b === 'turret' && pad.t <= 0) {
-        let best = null, bd = 380 * 380;
-        for (const e of enemies) { if (e.hp <= 0 || e.phased) continue; const q = (e.x - x) ** 2 + (e.y - y) ** 2; if (q < bd) { bd = q; best = e; } }
-        if (best) { pad.aim = Math.atan2(best.x - x, -(best.y - y)); const b = mkShot(x + Math.sin(pad.aim) * 18, y - Math.cos(pad.aim) * 18, pad.aim, (5 + 4 * pad.lv) * P.s.dmgMul); b.tur = true; b.sz = .8; pBullets.push(b); pad.t = 1.1 - .25 * (pad.lv - 1); }
-        else pad.t = .2;
-      } else if (pad.b === 'repair') {
-        if (!inOrbit) pad.t = Math.max(pad.t, 2);
-        else if (pad.t <= 0) { pad.t = 12 - 3 * (pad.lv - 1); if (P.armor < P.maxArmor) { P.armor++; floatText(P.x, P.y - 50, '基地维修 +1', 15, '#7dff9a'); } }
-      } else if (pad.b === 'miner' && pad.t <= 0) {
-        pad.t = 8 - 2 * (pad.lv - 1); ore++;
-        if (x > -40 && x < W + 40 && y > -40 && y < H + 40) floatText(x, y - 26, '+1 矿石', 11, '#ffd27a', .9);
-      }
+// 袭击者：飞向目标建筑自爆
+function raidMove(e, edt) {
+  const s = e.raid;
+  if (!s || !s.b) { e.raid = null; return false; }
+  const p = s.p, x = p.x + s.dx, y = p.y + s.dy, dx = x - e.x, dy = y - e.y, d = Math.hypot(dx, dy) || 1, sp = 150 * edt;
+  e.x += dx / d * sp; e.y += dy / d * sp; e.x0 = e.x; e.fx = dx / d; e.fy = dy / d;
+  if (d < 24) { siteHit(s, 30); explosion(e.x, e.y, 20); damageEnemy(e, 1e9); }
+  return true;
+}
+function baseStep(p, dt) {
+  const P = player, hx = P.x, hy = P.y + HIT_OY, built = p.sites.filter(s => s.b);
+  for (const s of p.sites) {
+    const x = p.x + s.dx, y = p.y + s.dy, d = Math.hypot(hx - x, hy - y);
+    if (d > 70) s.armed = true;
+    else if (d < 34 && s.armed && (!s.b || s.b === 'mod' || s.lv < buildMax(s.b)) && !P.dead) { s.armed = false; openBuild(p, s); return; }
+    if (!s.b) continue;
+    if (s.hit > 0) s.hit -= dt;
+    s.t -= dt;
+    if (s.b === 'turret' && s.t <= 0) {
+      let best = null, bd = 380 * 380;
+      for (const e of enemies) { if (e.hp <= 0 || e.phased) continue; const q = (e.x - x) ** 2 + (e.y - y) ** 2; if (q < bd) { bd = q; best = e; } }
+      if (best) { s.aim = Math.atan2(best.x - x, -(best.y - y)); for (let k = 0; k < s.lv; k++) { const o = (k - (s.lv - 1) / 2) * 6, b = mkShot(x + Math.sin(s.aim) * 18 + Math.cos(s.aim) * o, y - Math.cos(s.aim) * 18 + Math.sin(s.aim) * o, s.aim, 7 * P.s.dmgMul); b.tur = true; b.sz = .8; pBullets.push(b); } s.t = 1.1 - .25 * (s.lv - 1); }
+      else s.t = .2;
+    } else if (s.b === 'silo' && s.t <= 0) {
+      let best = null, bd = 450 * 450;
+      for (const e of enemies) { if (e.hp <= 0 || e.phased) continue; const q = (e.x - x) ** 2 + (e.y - y) ** 2; if (q < bd) { bd = q; best = e; } }
+      if (best) { p.shells.push({ sx: s.dx, sy: s.dy, tx: best.x - p.x, ty: best.y - p.y, t: 0, T: .7, dmg: (10 + 6 * s.lv) * P.s.dmgMul, r: 60 + 10 * s.lv }); s.t = 3.4 - .6 * (s.lv - 1); tone(220, .12, 'square', .03); }
+      else s.t = .3;
+    } else if (s.b === 'shield') {
+      const R = 80 + 20 * s.lv;
+      for (const b of eBullets) if (!b.dead && (b.x - x) ** 2 + (b.y - y) ** 2 < R * R) { b.dead = true; if (Math.random() < .3) hitSpark(b.x, b.y, '120,200,255'); }
+    } else if (s.b === 'repair') {
+      for (const o of built) if (o.hp < o.max && Math.hypot(o.dx - s.dx, o.dy - s.dy) < 320) o.hp = Math.min(o.max, o.hp + 4 * s.lv * dt);
+      if (!p.inOrbit) s.t = Math.max(s.t, 2);
+      else if (s.t <= 0) { s.t = 12 - 3 * (s.lv - 1); if (P.armor < P.maxArmor) { P.armor++; floatText(P.x, P.y - 50, '基地维修 +1', 15, '#7dff9a'); } }
+    } else if (s.b === 'miner' && s.t <= 0) {
+      s.t = 6 - 1.5 * (s.lv - 1); ore += oreMul; oreGot += oreMul;
+      if (x > -40 && x < W + 40 && y > -40 && y < H + 40) floatText(x, y - 26, '+1', 11, '#ffd27a', .9);
     }
   }
+  // 敌弹打到建筑
+  for (const b of eBullets) { if (b.dead) continue; for (const s of built) { if (!s.b) continue; const x = p.x + s.dx, y = p.y + s.dy; if ((b.x - x) ** 2 + (b.y - y) ** 2 < 22 * 22) { b.dead = true; siteHit(s, 8); break; } } }
+  // 导弹井的炮弹：飞 0.7 秒落地，范围伤害
+  for (const sh of p.shells) {
+    sh.t += dt; if (sh.t < sh.T) continue; sh.dead = true;
+    const x = p.x + sh.tx, y = p.y + sh.ty; explosion(x, y, 26); noise(.2, .12, 600);
+    for (const t of targets()) if (t.kind === 'e' && Math.hypot(t.x - x, t.y - y) < sh.r + t.r) applyHit(t, sh.dmg, t.x, t.y, '255,140,90', .3);
+  }
+  p.shells = p.shells.filter(s => !s.dead);
+  // 袭击：有建筑之后，每隔一段时间来一小队冲向建筑
+  const live = p.sites.filter(s => s.b);
+  if (live.length && (p.raidT -= dt) <= 0) {
+    p.raidT = Math.max(16, 30 - p.i * 3);
+    const s = live[Math.random() * live.length | 0], n = 2 + Math.min(4, p.i + Math.floor(survT / 150));
+    for (let k = 0; k < n; k++) {
+      const a = s.a + rnd(-.4, .4), d = Math.hypot(s.dx, s.dy) + 520, x = p.x + Math.cos(a) * d, y = p.y + Math.sin(a) * d;
+      spawnEnemy('dart', x, y, { vx: 0, vy: 0 }); const e = enemies[enemies.length - 1], hk = 1 + survT / SURV_HP_T; e.hp *= hk; e.maxHp *= hk; e.raid = s;
+    }
+    floatText(W / 2, SURV_Y - 150, BUILDS[s.b].name + ' 遭到袭击', 14, '#ff9a7a', 1.8);
+  }
 }
-function openBuild(p, pad) { buildCtx = { p, pad }; state = 'build'; drag = null; tone(523, .12, 'triangle', .06); tone(659, .15, 'triangle', .06, 0, .08); }
+function openBuild(p, s) { buildCtx = { p, pad: s }; state = 'build'; drag = null; tone(523, .12, 'triangle', .06); tone(659, .15, 'triangle', .06, 0, .08); }
 function closeBuild() { buildCtx = null; state = 'play'; last = performance.now(); }
-const buildIds = () => !buildCtx ? [] : buildCtx.pad.b === 'mod' ? Object.keys(MODS).filter(modOk) : buildCtx.pad.b ? [buildCtx.pad.b] : Object.keys(BUILDS);
+// 空地基能建的：每颗星球只能有一个的建筑（雷达、改装台）建过就不再出现
+const buildIds = () => {
+  if (!buildCtx) return []; const s = buildCtx.pad, p = buildCtx.p;
+  if (s.b === 'mod') return Object.keys(MODS).filter(modOk);
+  if (s.b) return [s.b];
+  return BUILD_IDS.filter(id => !(BUILDS[id].one && p.sites.some(o => o.b === id)));
+};
+const buildBlocked = (s, id) => id === 'miner' && !(s.vein && s.vein.found) ? '需要已发现的矿脉' : '';
 function buildAct(a) {
   if (!a || !buildCtx) return;
   if (a === 'bclose') { closeBuild(); return; }
@@ -1316,36 +1441,56 @@ function buildAct(a) {
     ore -= cost; modN[id] = (modN[id] || 0) + 1; MODS[id].apply(player); sfxPick(); return;
   }
   if (!a.startsWith('b:')) return;
-  const { p, pad } = buildCtx, id = a.slice(2), lv = pad.b ? pad.lv + 1 : 1, cost = BUILDS[id].cost[lv - 1];
-  if (ore < cost) { tone(150, .12, 'square', .04); return; }
-  ore -= cost; pad.b = id; pad.lv = lv; pad.t = 0; sfxPick();
-  floatText(p.x + pad.dx, p.y + pad.dy - 34, BUILDS[id].name + (lv > 1 ? ' Lv' + lv : ' 建成'), 16, `rgb(${BUILDS[id].c})`, 1.4);
+  const { p, pad: s } = buildCtx, id = a.slice(2), lv = s.b ? s.lv + 1 : 1, cost = BUILDS[id].cost[lv - 1];
+  if (cost === undefined || buildBlocked(s, id) || ore < cost) { tone(150, .12, 'square', .04); return; }
+  ore -= cost; s.b = id; s.lv = lv; s.t = 0; s.hp = s.max = buildHp(id, lv); sfxPick();
+  if (id === 'radar') { for (const v of p.veins) v.found = true; p.core.revealed = true; }
+  floatText(p.x + s.dx, p.y + s.dy - 34, BUILDS[id].name + (lv > 1 ? ' Lv' + lv : ' 建成'), 16, `rgb(${BUILDS[id].c})`, 1.4);
   closeBuild();
 }
 function drawBuild() {
-  uiRects = []; const c = buildCtx; if (!c) return; const pad = c.pad, mod = pad.b === 'mod', ids = buildIds();
-  ctx.fillStyle = 'rgba(0,8,22,.74)'; ctx.fillRect(0, 0, W, H);
+  uiRects = []; const c = buildCtx; if (!c) return; const s = c.pad, mod = s.b === 'mod', ids = buildIds();
+  ctx.fillStyle = 'rgba(0,8,22,.76)'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.font = `900 26px ${FONT}`; ctx.fillStyle = mod ? '#bff4ff' : '#ffd9a0'; ctx.fillText(mod ? '改装台' : pad.b ? '升级建筑' : '建造', W / 2, 160);
+  ctx.font = `900 26px ${FONT}`; ctx.fillStyle = mod ? '#bff4ff' : '#ffd9a0'; ctx.fillText(mod ? '改装台' : s.b ? '升级建筑' : '建造', W / 2, 140);
   ctx.font = `bold 16px ${FONT}`; const os = String(Math.floor(ore)), ow = ctx.measureText(os).width;
-  drawGlyph('ore', W / 2 - ow / 2 - 10, 194, 16, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(os, W / 2 + 8, 195);
-  const ch = mod ? 68 : 80, gap = ch + 12, top = 222;
-  ids.forEach((id, i) => {
-    const d = mod ? MODS[id] : BUILDS[id], lv = mod ? 0 : pad.b ? pad.lv + 1 : 1, cost = mod ? modCost(id) : d.cost[lv - 1], ok = ore >= cost, y = top + i * gap, col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
-    uiRects.push({ x: 30, y, w: W - 60, h: ch, act: (mod ? 'm:' : 'b:') + id });
-    ctx.fillStyle = ok ? 'rgba(10,30,50,.94)' : 'rgba(10,20,30,.85)'; roundRect(30, y, W - 60, ch, 8); ctx.fill();
-    ctx.strokeStyle = ok ? col : 'rgba(150,160,170,.5)'; ctx.lineWidth = 1.6; ctx.stroke();
-    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(68, y + ch / 2, 24, 0, TAU); ctx.fill();
-    drawGlyph(mod ? d.gl : BUILD_GL[id], 68, y + ch / 2, 26, col);
-    ctx.textAlign = 'left'; ctx.font = `bold 17px ${FONT}`; ctx.fillStyle = ok ? '#fff' : 'rgba(190,200,210,.6)';
-    ctx.fillText(d.name + (!mod && lv > 1 ? `  Lv${lv - 1} → Lv${lv}` : ''), 104, y + 24);
-    ctx.font = `12px ${FONT}`; ctx.fillStyle = ok ? '#cfe2f0' : 'rgba(190,200,210,.5)'; ctx.fillText(mod ? d.txt : d.desc(lv), 104, y + ch - 20);
-    ctx.textAlign = 'right'; ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = ok ? '#ffd27a' : '#ff8a7a'; ctx.fillText(String(cost), W - 46, y + 25);
-    drawGlyph('ore', W - 54 - ctx.measureText(String(cost)).width, y + 24, 13, ok ? '#ffd27a' : '#ff8a7a');
-    ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.fillText(`[${i + 1}]`, W - 46, y + ch - 18);
-  });
+  drawGlyph('ore', W / 2 - ow / 2 - 10, 172, 16, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(os, W / 2 + 8, 173);
+  let bottom = 200;
+  if (!mod && !s.b) {
+    // 空地基：两列卡片
+    const cw = (W - 70) / 2, chh = 96;
+    ids.forEach((id, i) => {
+      const d = BUILDS[id], cost = d.cost[0], why = buildBlocked(s, id), ok = !why && ore >= cost, x = 30 + (i % 2) * (cw + 10), y = 196 + Math.floor(i / 2) * (chh + 10), col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
+      uiRects.push({ x, y, w: cw, h: chh, act: 'b:' + id });
+      ctx.fillStyle = ok ? 'rgba(10,30,50,.94)' : 'rgba(10,20,30,.85)'; roundRect(x, y, cw, chh, 8); ctx.fill();
+      ctx.strokeStyle = ok ? col : 'rgba(150,160,170,.45)'; ctx.lineWidth = 1.5; ctx.stroke();
+      drawGlyph(d.gl, x + 26, y + 28, 24, col);
+      ctx.textAlign = 'left'; ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = ok ? '#fff' : 'rgba(190,200,210,.6)'; ctx.fillText(d.name, x + 48, y + 22);
+      ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = ore >= cost ? '#ffd27a' : '#ff8a7a'; ctx.fillText(String(cost), x + 64, y + 42); drawGlyph('ore', x + 55, y + 41, 11, ore >= cost ? '#ffd27a' : '#ff8a7a');
+      ctx.font = `11px ${FONT}`; ctx.fillStyle = why ? '#ff9a8a' : ok ? '#cfe2f0' : 'rgba(190,200,210,.5)'; wrapText(why || d.desc(1), x + 10, y + 64, cw - 18, 15);
+      ctx.textAlign = 'right'; ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.fillText(`[${i + 1}]`, x + cw - 8, y + 14);
+    });
+    bottom = 196 + Math.ceil(ids.length / 2) * (chh + 10);
+  } else {
+    const ch = 72, gap = ch + 12;
+    ids.forEach((id, i) => {
+      const d = mod ? MODS[id] : BUILDS[id], lv = mod ? 0 : s.lv + 1, cost = mod ? modCost(id) : d.cost[lv - 1], ok = ore >= cost, y = 200 + i * gap, col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
+      uiRects.push({ x: 30, y, w: W - 60, h: ch, act: (mod ? 'm:' : 'b:') + id });
+      ctx.fillStyle = ok ? 'rgba(10,30,50,.94)' : 'rgba(10,20,30,.85)'; roundRect(30, y, W - 60, ch, 8); ctx.fill();
+      ctx.strokeStyle = ok ? col : 'rgba(150,160,170,.5)'; ctx.lineWidth = 1.6; ctx.stroke();
+      ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(68, y + ch / 2, 24, 0, TAU); ctx.fill();
+      drawGlyph(d.gl, 68, y + ch / 2, 26, col);
+      ctx.textAlign = 'left'; ctx.font = `bold 17px ${FONT}`; ctx.fillStyle = ok ? '#fff' : 'rgba(190,200,210,.6)';
+      ctx.fillText(d.name + (!mod ? `  Lv${lv - 1} → Lv${lv}` : ''), 104, y + 24);
+      ctx.font = `12px ${FONT}`; ctx.fillStyle = ok ? '#cfe2f0' : 'rgba(190,200,210,.5)'; ctx.fillText(mod ? d.txt : d.desc(lv), 104, y + ch - 20);
+      ctx.textAlign = 'right'; ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = ok ? '#ffd27a' : '#ff8a7a'; ctx.fillText(String(cost), W - 46, y + 25);
+      drawGlyph('ore', W - 54 - ctx.measureText(String(cost)).width, y + 24, 13, ok ? '#ffd27a' : '#ff8a7a');
+      ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.fillText(`[${i + 1}]`, W - 46, y + ch - 18);
+    });
+    bottom = 200 + ids.length * gap;
+  }
   ctx.textAlign = 'center';
-  uiBtn(W / 2 - 70, top + ids.length * gap + 6, 140, 38, '离开 [Esc]', 'bclose');
+  uiBtn(W / 2 - 70, bottom + 4, 140, 38, '离开 [Esc]', 'bclose');
 }
 function drawOre(p) {
   const s = 5 + Math.min(4, p.v);
@@ -1355,35 +1500,81 @@ function drawOre(p) {
   ctx.beginPath(); ctx.moveTo(0, -s); ctx.lineTo(s * .9, -s * .2); ctx.lineTo(s * .5, s * .8); ctx.lineTo(-s * .6, s * .7); ctx.lineTo(-s * .9, -s * .3); ctx.closePath(); ctx.fill(); ctx.stroke();
   ctx.restore();
 }
-// 建造点和建筑（俯视）
-function drawPad(pad, x, y) {
-  const d = pad.b && BUILDS[pad.b], col = pad.b === 'mod' ? '120,220,255' : d ? d.c : '255,210,140';
+// 地基和建筑（俯视）：等级越高外形越复杂
+function drawSite(s, x, y) {
+  const d = s.b && BUILDS[s.b], col = d ? d.c : '255,210,140', lv = s.lv;
   ctx.save(); ctx.translate(x, y);
-  ctx.globalCompositeOperation = 'lighter'; drawGlow(0, 0, 70, col, pad.b ? .35 : .25 + .15 * Math.sin(time * 4)); ctx.globalCompositeOperation = 'source-over';
-  ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = i / 6 * TAU + Math.PI / 6; ctx.lineTo(Math.cos(a) * 22, Math.sin(a) * 22); } ctx.closePath();
-  ctx.fillStyle = 'rgba(14,22,34,.92)'; ctx.fill();
-  if (!pad.b) { ctx.setLineDash([5, 4]); ctx.lineDashOffset = -time * 10; }
+  ctx.globalCompositeOperation = 'lighter'; drawGlow(0, 0, 64, col, s.b ? .3 : .16 + .08 * Math.sin(time * 4)); ctx.globalCompositeOperation = 'source-over';
+  const R = 20 + (lv >= 3 ? 3 : lv >= 2 ? 1.5 : 0);
+  ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = i / 6 * TAU + Math.PI / 6; ctx.lineTo(Math.cos(a) * R, Math.sin(a) * R); } ctx.closePath();
+  ctx.fillStyle = s.hit > 0 ? 'rgba(120,40,40,.95)' : 'rgba(14,22,34,.92)'; ctx.fill();
+  if (!s.b) { ctx.setLineDash([5, 4]); ctx.lineDashOffset = -time * 10; }
   ctx.strokeStyle = `rgba(${col},.9)`; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
-  if (!pad.b) {
-    ctx.strokeStyle = `rgba(${col},.95)`; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-7, 0); ctx.lineTo(7, 0); ctx.moveTo(0, -7); ctx.lineTo(0, 7); ctx.stroke();
-    ctx.font = `bold 10px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.fillStyle = '#ffe6b0'; ctx.strokeText('建造点', 0, 36); ctx.fillText('建造点', 0, 36);
-  } else if (pad.b === 'mod') {
-    drawGlyph('wrench', 0, 0, 22, '#9fe8ff');
-    ctx.font = `bold 10px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.fillStyle = '#bff4ff'; ctx.strokeText('改装台', 0, 36); ctx.fillText('改装台', 0, 36);
-  } else if (pad.b === 'turret') {
-    ctx.fillStyle = '#5a6272'; ctx.beginPath(); ctx.arc(0, 0, 12, 0, TAU); ctx.fill(); ctx.strokeStyle = `rgb(${col})`; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.rotate(pad.aim); ctx.fillStyle = '#9aa3b2'; ctx.fillRect(-3.5, -22, 7, 16); ctx.fillStyle = `rgb(${col})`; ctx.fillRect(-3.5, -24, 7, 3);
-    if (pad.lv >= 2) { ctx.fillStyle = '#9aa3b2'; ctx.fillRect(-9, -18, 4, 11); ctx.fillRect(5, -18, 4, 11); }
-  } else if (pad.b === 'repair') {
-    const pu = 1 + .08 * Math.sin(time * 5);
-    ctx.fillStyle = 'rgba(40,90,60,.95)'; ctx.beginPath(); ctx.arc(0, 0, 13 * pu, 0, TAU); ctx.fill(); ctx.strokeStyle = `rgb(${col})`; ctx.lineWidth = 1.5; ctx.stroke();
+  if (lv >= 3) { ctx.strokeStyle = `rgba(${col},.45)`; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, R + 6, 0, TAU); ctx.stroke(); }
+  const C = `rgb(${col})`;
+  if (!s.b) {
+    ctx.strokeStyle = `rgba(${col},.9)`; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(6, 0); ctx.moveTo(0, -6); ctx.lineTo(0, 6); ctx.stroke();
+    if (s.vein && s.vein.found && s.vein.left > 0) drawGlyph('ore', 14, -14, 10, '#ffd27a');
+  } else if (s.b === 'turret') {
+    ctx.fillStyle = '#5a6272'; ctx.beginPath(); ctx.arc(0, 0, 11, 0, TAU); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.rotate(s.aim); ctx.fillStyle = '#a8b0be'; for (let k = 0; k < lv; k++) { const o = (k - (lv - 1) / 2) * 6; ctx.fillRect(o - 2.2, -22, 4.4, 15); } ctx.fillStyle = C; ctx.fillRect(-lv * 3 - 1, -24, lv * 6 + 2, 3);
+  } else if (s.b === 'silo') {
+    ctx.fillStyle = '#4a3a3a'; roundRect(-12, -12, 24, 24, 4); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1.5; ctx.stroke();
+    const n = lv + 1; for (let k = 0; k < n; k++) { const a = k / n * TAU, rr = n > 2 ? 6 : 4; ctx.fillStyle = s.t < .5 ? '#ffd27a' : '#2a1a1a'; ctx.beginPath(); ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, 3, 0, TAU); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1; ctx.stroke(); }
+  } else if (s.b === 'shield') {
+    ctx.fillStyle = 'rgba(40,70,110,.95)'; ctx.beginPath(); ctx.arc(0, 0, 12, 0, TAU); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1.5; ctx.stroke();
+    for (let k = 0; k < lv; k++) { ctx.strokeStyle = `rgba(${col},.8)`; ctx.beginPath(); ctx.arc(0, 0, 4 + k * 3, 0, TAU); ctx.stroke(); }
+  } else if (s.b === 'repair') {
+    ctx.fillStyle = 'rgba(40,90,60,.95)'; ctx.beginPath(); ctx.arc(0, 0, 13, 0, TAU); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.fillStyle = '#eafff0'; ctx.fillRect(-2.5, -8, 5, 16); ctx.fillRect(-8, -2.5, 16, 5);
-  } else if (pad.b === 'miner') {
-    ctx.fillStyle = '#6a5a3a'; roundRect(-11, -11, 22, 22, 4); ctx.fill(); ctx.strokeStyle = `rgb(${col})`; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.rotate(time * 4); ctx.strokeStyle = '#e8d6a0'; ctx.lineWidth = 3; ctx.beginPath(); for (let i = 0; i < 3; i++) { const a = i / 3 * TAU; ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * 9, Math.sin(a) * 9); } ctx.stroke();
+  } else if (s.b === 'miner') {
+    ctx.fillStyle = '#6a5a3a'; roundRect(-11, -11, 22, 22, 4); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.rotate(time * (3 + lv)); ctx.strokeStyle = '#e8d6a0'; ctx.lineWidth = 3; ctx.beginPath(); for (let i = 0; i < lv + 2; i++) { const a = i / (lv + 2) * TAU; ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * 9, Math.sin(a) * 9); } ctx.stroke();
+  } else if (s.b === 'radar') {
+    ctx.fillStyle = '#2a4a48'; ctx.beginPath(); ctx.arc(0, 0, 12, 0, TAU); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.rotate(time * 2); ctx.strokeStyle = C; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(0, 0, 8, -.7, .7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(10, 0); ctx.stroke();
+  } else if (s.b === 'beacon') {
+    ctx.fillStyle = '#4a4630'; ctx.beginPath(); ctx.moveTo(0, -14); ctx.lineTo(10, 10); ctx.lineTo(-10, 10); ctx.closePath(); ctx.fill(); ctx.strokeStyle = C; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.globalCompositeOperation = 'lighter'; drawGlow(0, -12, 14 + lv * 6, col, .6 + .3 * Math.sin(time * 5)); ctx.globalCompositeOperation = 'source-over';
+  } else if (s.b === 'mod') drawGlyph('wrench', 0, 0, 22, C);
+  ctx.restore();
+  if (s.b) {
+    for (let i = 0; i < lv; i++) { ctx.fillStyle = `rgb(${col})`; ctx.beginPath(); ctx.arc(x - (lv - 1) * 4 + i * 8, y + 30, 2.2, 0, TAU); ctx.fill(); }
+    if (s.hp < s.max) { ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - 16, y + 35, 32, 4); ctx.fillStyle = s.hp / s.max > .4 ? '#7dff9a' : '#ff6a5a'; ctx.fillRect(x - 16, y + 35, 32 * Math.max(0, s.hp / s.max), 4); }
+  }
+}
+function drawFoe(p, f) {
+  const x = p.x + f.dx, y = p.y + f.dy; if (x < -60 || x > W + 60 || y < -60 || y > H + 60) return;
+  ctx.save(); ctx.translate(x, y);
+  if (f.type === 'tur') {
+    ctx.globalCompositeOperation = 'lighter'; drawGlow(0, 0, 50, '255,60,60', .3); ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = f.flash > 0 ? '#fff' : '#3a2228'; ctx.beginPath(); for (let i = 0; i < 8; i++) { const a = i / 8 * TAU; ctx.lineTo(Math.cos(a) * 16, Math.sin(a) * 16); } ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#ff5a5a'; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.rotate(f.aim); ctx.fillStyle = '#c04a4a'; ctx.fillRect(4, -3, 18, 6); ctx.fillStyle = '#ff9a8a'; ctx.beginPath(); ctx.arc(0, 0, 6, 0, TAU); ctx.fill();
+  } else {
+    const pu = .6 + .4 * Math.sin(time * 4 + f.a);
+    ctx.globalCompositeOperation = 'lighter'; drawGlow(0, 0, 70, '190,110,255', .45 * pu); ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = f.flash > 0 ? '#fff' : '#2c2140'; roundRect(-12, -18, 24, 36, 5); ctx.fill(); ctx.strokeStyle = '#c08aff'; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.fillStyle = `rgba(220,170,255,${.6 + .4 * pu})`; ctx.fillRect(-6, -12, 12, 5); ctx.fillRect(-6, -2, 12, 5); ctx.fillRect(-6, 8, 12, 4);
   }
   ctx.restore();
-  if (pad.b) for (let i = 0; i < pad.lv; i++) { ctx.fillStyle = `rgb(${col})`; ctx.beginPath(); ctx.arc(x - (pad.lv - 1) * 4 + i * 8, y + 30, 2.2, 0, TAU); ctx.fill(); }
+  ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - 18, y + 24, 36, 4); ctx.fillStyle = f.type === 'gen' ? '#c08aff' : '#ff6a5a'; ctx.fillRect(x - 18, y + 24, 36 * f.hp / f.max, 4);
+}
+function drawCore(p) {
+  const c = p.core, x = p.x + c.dx, y = p.y + c.dy; if (x < -90 || x > W + 90 || y < -90 || y > H + 90) return;
+  const shield = gensAlive(p), pu = .6 + .4 * Math.sin(time * 3);
+  if (!c.open) {
+    // 埋在地下：发生器打掉后（或建了雷达）才显示位置
+    if (shield && !c.revealed) return;
+    ctx.save(); ctx.setLineDash([6, 6]); ctx.lineDashOffset = -time * 20; ctx.strokeStyle = `rgba(255,90,110,${.5 + .3 * pu})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, c.r + 10, 0, TAU); ctx.stroke(); ctx.restore();
+    ctx.font = `bold 11px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.fillStyle = '#ffb0bc'; ctx.strokeText('核心', x, y + 2); ctx.fillText('核心', x, y + 2);
+    return;
+  }
+  ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, 110, '255,60,90', .6 * pu); ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = c.flash > 0 ? '#fff' : '#5a1020'; ctx.beginPath(); ctx.arc(x, y, c.r, 0, TAU); ctx.fill();
+  ctx.fillStyle = `rgba(255,120,140,${.7 + .3 * pu})`; ctx.beginPath(); ctx.arc(x, y, c.r * .55, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#ff8a9a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, c.r, 0, TAU); ctx.stroke();
+  if (shield) { ctx.strokeStyle = `rgba(190,120,255,${.6 + .3 * pu})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, c.r + 9, 0, TAU); ctx.stroke(); }
 }
 function drawPlanets() {
   for (const p of planets) {
@@ -1395,53 +1586,170 @@ function drawPlanets() {
     gr.addColorStop(0, `rgba(${atm},.26)`); gr.addColorStop(1, `rgba(${atm},0)`);
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(p.x, p.y, p.R * 1.45, 0, TAU); ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
-    // 只画屏幕内的那一块
     const x0 = Math.max(0, -sx0 - 20), y0 = Math.max(0, -sy0 - 20), x1 = Math.min(S, W - sx0 + 20), y1 = Math.min(S, H - sy0 + 20);
     if (x1 > x0 && y1 > y0) ctx.drawImage(p.cv, x0, y0, x1 - x0, y1 - y0, sx0 + x0, sy0 + y0, x1 - x0, y1 - y0);
-    // 轨道圈：未占领红色，进入后变金色，占领后变青色
+    // 轨道圈 = 星球环境的范围
     const rc = p.owned ? '110,230,255' : p.inOrbit ? '255,225,120' : '255,120,90';
     ctx.save(); ctx.setLineDash([16, 12]); ctx.lineDashOffset = -time * 24;
-    ctx.strokeStyle = `rgba(${rc},${p.inOrbit ? .75 : .35})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, p.orbit, 0, TAU); ctx.stroke(); ctx.restore();
-    // 读条进度直接画在轨道圈上
-    if (!p.owned && p.cap > 0) { ctx.strokeStyle = `rgba(255,215,110,${p.inOrbit ? .95 : .5})`; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(p.x, p.y, p.orbit, -Math.PI / 2, -Math.PI / 2 + p.cap * TAU); ctx.stroke(); ctx.lineCap = 'butt'; }
-    // 已发现的矿脉：金色发光
+    ctx.strokeStyle = `rgba(${rc},${p.inOrbit ? .6 : .35})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, p.orbit, 0, TAU); ctx.stroke(); ctx.restore();
     for (const v of p.veins) {
       if (!v.found || v.left <= 0) continue; const x = p.x + v.x, y = p.y + v.y; if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
       ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, v.r * 3.2, '255,200,80', .45 + .2 * Math.sin(time * 3 + v.x)); ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = '#ffd77a'; for (let k = 0; k < 5; k++) { const a = k * 1.3 + v.y, rr = v.r * .55 * (k % 2 ? .6 : 1), cx = x + Math.cos(a) * rr, cy = y + Math.sin(a) * rr; ctx.beginPath(); ctx.moveTo(cx, cy - 4); ctx.lineTo(cx + 3, cy); ctx.lineTo(cx, cy + 4); ctx.lineTo(cx - 3, cy); ctx.closePath(); ctx.fill(); }
     }
-    if (p.pads) {
-      // 基地管线：改装台连到三个建造点
-      const hub = p.pads[3]; if (hub) { ctx.strokeStyle = 'rgba(140,200,230,.4)'; ctx.lineWidth = 3; ctx.beginPath(); for (let j = 0; j < 3; j++) { ctx.moveTo(p.x + hub.dx, p.y + hub.dy); ctx.lineTo(p.x + p.pads[j].dx, p.y + p.pads[j].dy); } ctx.stroke(); }
-      for (const pad of p.pads) { const x = p.x + pad.dx, y = p.y + pad.dy; if (x > -60 && x < W + 60 && y > -60 && y < H + 60) drawPad(pad, x, y); }
+    if (p.owned) continue;
+    // 护盾连线：发生器 → 核心
+    if (gensAlive(p)) { ctx.save(); ctx.setLineDash([3, 7]); ctx.lineDashOffset = -time * 30; ctx.strokeStyle = 'rgba(190,120,255,.4)'; ctx.lineWidth = 2; ctx.beginPath(); for (const f of p.foes) if (f.type === 'gen' && f.hp > 0) { ctx.moveTo(p.x + f.dx, p.y + f.dy); ctx.lineTo(p.x + p.core.dx, p.y + p.core.dy); } ctx.stroke(); ctx.restore(); }
+    drawCore(p);
+    for (const f of p.foes) if (f.hp > 0) drawFoe(p, f);
+    // 基地管线：相邻的建筑连起来
+    ctx.strokeStyle = 'rgba(140,200,230,.4)'; ctx.lineWidth = 3; ctx.beginPath();
+    for (let k = 0; k < 8; k++) { const a = p.sites[k], b = p.sites[(k + 1) % 8]; if (a.b && b.b) { ctx.moveTo(p.x + a.dx, p.y + a.dy); ctx.lineTo(p.x + b.dx, p.y + b.dy); } }
+    ctx.stroke();
+    for (const s of p.sites) {
+      const x = p.x + s.dx, y = p.y + s.dy; if (x < -140 || x > W + 140 || y < -140 || y > H + 140) continue;
+      if (s.b === 'shield') { const R = 80 + 20 * s.lv; ctx.fillStyle = 'rgba(120,200,255,.06)'; ctx.strokeStyle = 'rgba(120,200,255,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, R, 0, TAU); ctx.fill(); ctx.stroke(); }
+      drawSite(s, x, y);
+    }
+    for (const sh of p.shells) {
+      const k = sh.t / sh.T, x = p.x + sh.sx + (sh.tx - sh.sx) * k, y = p.y + sh.sy + (sh.ty - sh.sy) * k - Math.sin(k * Math.PI) * 60;
+      ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, 22, '255,150,90', .8); ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#ffe0b0'; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, TAU); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,90,60,.5)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(p.x + sh.tx, p.y + sh.ty, sh.r * k, 0, TAU); ctx.stroke();
     }
   }
 }
+// 环境画面：霜蓝星画面边缘结霜，沙丘星沙暴挡住远处视野
+function drawPlanetEnv() {
+  const t = planetTarget(); if (!t || !t.inOrbit) return;
+  const h = hitPt();
+  if (t.kind === 1) {
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .35, W / 2, H / 2, Math.max(W, H) * .7);
+    g.addColorStop(0, 'rgba(170,220,255,0)'); g.addColorStop(1, 'rgba(190,230,255,.35)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  } else if (t.kind === 3) {
+    const g = ctx.createRadialGradient(h.x, h.y, 130, h.x, h.y, 330);
+    g.addColorStop(0, 'rgba(190,150,80,0)'); g.addColorStop(1, 'rgba(170,130,70,.82)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(240,210,150,.25)'; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (let k = 0; k < 36; k++) { const y = (k * 53.7) % H, x = (k * 131 + time * (220 + k % 5 * 40)) % (W + 80) - 40; ctx.moveTo(x, y); ctx.lineTo(x + 28, y + 6); }
+    ctx.stroke();
+  }
+}
+const ENV_TXT = ['岩浆喷发', '冰冻减速', '虫群出没', '沙暴'];
+// 屏幕边缘箭头：目标不在屏幕里时指过去
+function edgeArrow(tx, ty, rgb) {
+  const P = player, hx = P.x, hy = P.y + HIT_OY;
+  if (tx > 30 && tx < W - 30 && ty > 120 && ty < H - 150) return;
+  const a = Math.atan2(ty - hy, tx - hx), ca = Math.cos(a), sa = Math.sin(a);
+  const kx = ca > 0 ? (W - 26 - hx) / ca : ca < 0 ? (26 - hx) / ca : 1e9, ky = sa > 0 ? (H - 150 - hy) / sa : sa < 0 ? (124 - hy) / sa : 1e9, k = Math.min(kx, ky);
+  ctx.save(); ctx.translate(hx + ca * k, hy + sa * k); ctx.rotate(a);
+  ctx.fillStyle = `rgba(${rgb},${.7 + .3 * Math.sin(time * 6)})`; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(-8, -10); ctx.lineTo(-3, 0); ctx.lineTo(-8, 10); ctx.closePath(); ctx.stroke(); ctx.fill(); ctx.restore();
+}
 function drawPlanetHud() {
-  const P = player, t = planets.find(p => !p.owned), bw = 180, bx = W / 2 - bw / 2, by = H - 122;   // 放在底部武器栏上方，不和左上角的强化卡图标重叠
-  ctx.save(); ctx.textAlign = 'center'; ctx.font = `bold 11px ${FONT}`; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.7)';
-  let label = '下一颗星球即将出现…';
+  const P = player, t = planetTarget(), bw = 180, bx = W / 2 - bw / 2, by = H - 122;
+  ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.font = `bold 11px ${FONT}`; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.7)';
+  let label = '';
   if (t) {
     const hx = P.x, hy = P.y + HIT_OY, d = Math.hypot(t.x - hx, t.y - hy);
-    ctx.fillStyle = 'rgba(6,20,36,.8)'; roundRect(bx, by, bw, 8, 4); ctx.fill();
-    if (t.cap > .02) { ctx.fillStyle = t.inOrbit ? '#ffd27a' : '#b07a5a'; roundRect(bx, by, bw * t.cap, 8, 4); ctx.fill(); }
-    label = t.inOrbit ? `占领 ${t.name} · ${Math.floor(t.cap * 100)}%` : t.cap > 0 ? `离开轨道 · ${t.name} ${Math.floor(t.cap * 100)}%` : `前往 ${t.name} · ${Math.max(0, Math.round((d - t.orbit) / 10))} 米`;
-    // 方向箭头：星球表面不在屏幕里时，贴着屏幕边缘指过去
-    if (d - t.R * 1.15 > 380) {
-      const a = Math.atan2(t.y - hy, t.x - hx), ca = Math.cos(a), sa = Math.sin(a);
-      const kx = ca > 0 ? (W - 26 - hx) / ca : ca < 0 ? (26 - hx) / ca : 1e9, ky = sa > 0 ? (H - 150 - hy) / sa : sa < 0 ? (124 - hy) / sa : 1e9, k = Math.min(kx, ky);
-      ctx.save(); ctx.translate(hx + ca * k, hy + sa * k); ctx.rotate(a);
-      ctx.fillStyle = `rgba(255,180,110,${.7 + .3 * Math.sin(time * 6)})`; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(-8, -10); ctx.lineTo(-3, 0); ctx.lineTo(-8, 10); ctx.closePath(); ctx.stroke(); ctx.fill(); ctx.restore();
+    if (!t.inOrbit && t.orbitT0 < 0) { label = `前往 ${t.name} · ${Math.max(0, Math.round((d - t.orbit) / 10))} 米`; if (d - t.R * 1.15 > 380) edgeArrow(t.x, t.y, '255,180,110'); }
+    else {
+      const gens = t.foes.filter(f => f.type === 'gen'), alive = gens.filter(f => f.hp > 0);
+      let frac, col, tx, ty;
+      if (alive.length) {
+        label = `摧毁护盾发生器 ${gens.length - alive.length}/${gens.length}`; frac = alive.reduce((s, f) => s + f.hp / f.max, 0) / gens.length; col = '#c08aff';
+        let best = alive[0], bd = 1e18; for (const f of alive) { const q = (t.x + f.dx - hx) ** 2 + (t.y + f.dy - hy) ** 2; if (q < bd) { bd = q; best = f; } } tx = t.x + best.dx; ty = t.y + best.dy;
+      } else { label = t.core.open ? '摧毁核心' : '挖开岩层，摧毁核心'; frac = t.core.hp / t.core.max; col = '#ff6a7a'; tx = t.x + t.core.dx; ty = t.y + t.core.dy; }
+      ctx.fillStyle = 'rgba(6,20,36,.8)'; roundRect(bx, by, bw, 8, 4); ctx.fill();
+      ctx.fillStyle = col; roundRect(bx, by, Math.max(4, bw * frac), 8, 4); ctx.fill();
+      edgeArrow(tx, ty, alive.length ? '200,140,255' : '255,110,130');
+      if (t.inOrbit) { ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = `rgb(${t.pal.atm})`; ctx.strokeText(ENV_TXT[t.kind], W / 2, by - 20); ctx.fillText(ENV_TXT[t.kind], W / 2, by - 20); ctx.font = `bold 11px ${FONT}`; }
     }
   }
   ctx.fillStyle = '#ffe6b0'; ctx.strokeText(label, W / 2, by - 5); ctx.fillText(label, W / 2, by - 5);
   // 矿石数量 + 已占领星球带来的永久加成图标
-  ctx.font = `bold 11px ${FONT}`; const os = String(Math.floor(ore)), ow = ctx.measureText(os).width, bc = planetBonusCount(), items = [0, 1, 2, 3].filter(k => bc[k]);
+  ctx.font = `bold 11px ${FONT}`; const os = String(Math.floor(ore)), ow = ctx.measureText(os).width, bt = planetBonusTotals(), items = [0, 1, 2, 3].filter(k => bt[k]);
   let x = W / 2 - (18 + ow + items.length * 20) / 2;
   drawGlyph('ore', x + 6, by + 19, 12, '#ffd27a'); ctx.textAlign = 'left'; ctx.fillStyle = '#ffd27a'; ctx.strokeText(os, x + 15, by + 23); ctx.fillText(os, x + 15, by + 23); x += 18 + ow + 8;
   for (const k of items) { drawGlyph(PLANET_BONUS[k].gl, x + 6, by + 19, 12, `rgb(${PLANET_BONUS[k].c})`); x += 20; }
   ctx.restore();
+}
+// ================= 星图：已占领星球的长期基地（局外用矿石升级）+ 选择下一颗目标星球 =================
+let smSel = -1;
+function smPos(i) {
+  const cx = W / 2, cy = 212;
+  if (i < 6) { const a = i / 6 * TAU - Math.PI / 2; return [cx + Math.cos(a) * 82, cy + Math.sin(a) * 82]; }
+  const j = i - 6, a = j / 10 * TAU - Math.PI / 2 + .31, r = 146 + Math.floor(j / 10) * 8; return [cx + Math.cos(a) * r, cy + Math.sin(a) * r * .95];
+}
+function smPlanet(x, y, r, k, sel) {
+  const pal = PLANET_PAL[k];
+  ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, r * 3, pal.atm, sel ? .55 : .3); ctx.globalCompositeOperation = 'source-over';
+  const g = ctx.createRadialGradient(x - r * .35, y - r * .35, r * .1, x, y, r); g.addColorStop(0, pal.blob[0]); g.addColorStop(.55, pal.base[1]); g.addColorStop(1, pal.base[0]);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+  if (sel) { ctx.strokeStyle = '#9fe8ff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, TAU); ctx.stroke(); }
+}
+function drawStarMap() {
+  uiRects = [];
+  ctx.fillStyle = 'rgba(2,8,18,.82)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = `900 24px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('星 图', W / 2, 30);
+  drawCrystals(W - 12, 30);
+  ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; drawGlyph('ore', 22, 30, 15, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(String(save.ore || 0), 34, 31); ctx.textAlign = 'center';
+  const L = save.planets, cx = W / 2, cy = 212;
+  ctx.strokeStyle = 'rgba(90,180,240,.16)'; ctx.lineWidth = 1; ctx.setLineDash([3, 6]);
+  for (const r of [82, 146]) { ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke(); }
+  ctx.setLineDash([]);
+  drawGlyph('squad', cx, cy, 28, '#9fe8ff');
+  ctx.font = `10px ${FONT}`; ctx.fillStyle = 'rgba(160,210,240,.7)'; ctx.fillText('舰队', cx, cy + 26);
+  L.forEach((s, i) => {
+    const [x, y] = smPos(i), sel = i === smSel;
+    uiRects.push({ x: x - 24, y: y - 24, w: 48, h: 48, act: 'sm:' + i });
+    smPlanet(x, y, 16, s.k % 4, sel);
+    for (let j = 0; j < (s.lv || 1); j++) { ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(x - ((s.lv || 1) - 1) * 3.5 + j * 7, y + 24, 2.2, 0, TAU); ctx.fill(); }
+  });
+  if (!L.length) { ctx.font = `13px ${FONT}`; ctx.fillStyle = 'rgba(190,220,240,.6)'; ctx.fillText('还没有占领的星球', cx, cy + 60); }
+  // 选中星球的基地
+  panel(12, 380, W - 24, 112, .86);
+  const s = L[smSel];
+  if (s) {
+    const k = s.k % 4, pb = PLANET_BONUS[k], inc = baseIncome(s), lv = s.lv || 1, cost = baseUpCost(lv), can = lv < BASE_MAX && (save.ore || 0) >= cost;
+    smPlanet(44, 412, 14, k, false);
+    ctx.textAlign = 'left'; ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = `rgb(${PLANET_PAL[k].atm})`; ctx.fillText(s.name, 68, 404);
+    ctx.font = `12px ${FONT}`; ctx.fillStyle = '#ffd23f'; ctx.fillText(`基地 Lv${lv}/${BASE_MAX}`, 68, 424);
+    drawGlyph(pb.gl, 32, 452, 14, `rgb(${pb.c})`); ctx.font = `13px ${FONT}`; ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText(pb.t(planetBonusOf(s)), 46, 453);
+    ctx.fillStyle = '#cfe2f0'; ctx.fillText(`每局产出`, 26, 476); drawGlyph('ore', 92, 475, 12, '#ffd27a'); ctx.fillStyle = '#ffd27a'; ctx.fillText(String(inc.ore), 102, 476); gem(140, 475, 6); ctx.fillStyle = '#bff4ff'; ctx.fillText(String(inc.cr), 150, 476);
+    ctx.textAlign = 'center';
+    if (lv < BASE_MAX) uiBtn(W - 142, 432, 118, 44, `升级 ${cost}`, 'smup', { fill: can ? 'rgba(30,110,170,.9)' : 'rgba(40,50,60,.8)', stroke: can ? '#9fe8ff' : 'rgba(150,160,170,.5)' });
+    else { ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#ffd23f'; ctx.fillText('已满级', W - 83, 454); }
+    if (lv < BASE_MAX) drawGlyph('ore', W - 120, 455, 12, can ? '#ffd27a' : '#998866');
+  } else { ctx.font = `13px ${FONT}`; ctx.fillStyle = 'rgba(190,220,240,.6)'; ctx.fillText(L.length ? '点击星球查看基地' : '占领星球后在这里升级基地', W / 2, 436); }
+  // 下一颗目标星球
+  const nk = save.nextKind != null ? save.nextKind % 4 : L.length % 4;
+  ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText('下一个目标', W / 2, 512);
+  for (let k = 0; k < 4; k++) {
+    const w = (W - 24 - 18) / 4, x = 12 + k * (w + 6), y = 524, on = k === nk;
+    uiRects.push({ x, y, w, h: 70, act: 'smk:' + k });
+    ctx.fillStyle = on ? 'rgba(40,110,170,.5)' : 'rgba(12,24,40,.8)'; roundRect(x, y, w, 70, 7); ctx.fill();
+    ctx.strokeStyle = on ? '#9fe8ff' : 'rgba(80,170,230,.3)'; ctx.lineWidth = on ? 1.8 : 1; ctx.stroke();
+    smPlanet(x + w / 2, y + 22, 11, k, false);
+    ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = on ? '#fff' : '#b9d6ea'; ctx.fillText(PLANET_PAL[k].name, x + w / 2, y + 46);
+    drawGlyph(PLANET_BONUS[k].gl, x + w / 2 - 22, y + 60, 10, `rgb(${PLANET_BONUS[k].c})`); ctx.font = `10px ${FONT}`; ctx.fillStyle = 'rgba(200,220,240,.7)'; ctx.fillText(ENV_TXT[k], x + w / 2 + 6, y + 61);
+  }
+  const lh = save.lastHarvest;
+  if (lh && (lh.ore || lh.cr || lh.left)) { ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.7)'; ctx.fillText(`上一局：星球产出 矿石 ${lh.ore} · 星晶 ${lh.cr}，带回矿石 ${lh.left}`, W / 2, 614); }
+  uiBtn(12, H - 58, 110, 40, '返回 [Esc]', 'back');
+  uiBtn(132, H - 58, W - 144, 40, '出击 · 生存模式 [Enter]', 'surv', { fill: 'rgba(15,95,75,.9)', stroke: '#8fffd0', fs: 14 });
+}
+function smAct(a) {
+  if (!a) return;
+  if (a === 'back') state = 'title';
+  else if (a === 'surv') startSurvival();
+  else if (a.startsWith('sm:')) { smSel = +a.slice(3); tone(660, .05, 'square', .04); }
+  else if (a.startsWith('smk:')) { save.nextKind = +a.slice(4); persist(); tone(700, .05, 'square', .04); }
+  else if (a === 'smup') {
+    const s = save.planets[smSel]; if (!s) return; const lv = s.lv || 1, cost = baseUpCost(lv);
+    if (lv >= BASE_MAX || (save.ore || 0) < cost) { tone(150, .12, 'square', .04); return; }
+    save.ore -= cost; s.lv = lv + 1; persist(); sfxPick();
+  }
 }
 function survSpawn(type, a, elite) {
   const R = 470 + rnd(0, 60);
@@ -1462,6 +1770,7 @@ function survEnemyMove(e, edt) {
   const P = player, dx = P.x - e.x, dy = P.y + HIT_OY - e.y, d = Math.hypot(dx, dy) || 1, tx = dx / d, ty = dy / d;
   if (e.shT > 0) e.shT -= edt;
   const fly = () => { e.x += e.vx * edt; e.y += e.vy * edt; e.x0 = e.x; };
+  if (e.raid && raidMove(e, edt)) return;   // 袭击建筑的敌人：飞向目标建筑
   if (ENEMY_ART[e.type] && ENEMY_ART[e.type].spin || e.lock) { fly(); e.fx = e.vx; e.fy = e.vy; return; }
   // 蓄力冲刺：进入范围后原地蓄力（有红光预警），再沿锁定方向猛冲一段
   const D = SURV_DASH[e.type];
@@ -1791,7 +2100,9 @@ addEventListener('keydown', e => {
   if ((state === 'title' || state === 'over') && e.code === 'KeyH') { state = 'hangar'; hangarPick = null; return; }
   if ((state === 'title' || state === 'over') && e.code === 'KeyJ') { state = 'gacha'; return; }
   if (state === 'over' && e.code === 'Escape') { state = 'title'; return; }
-  if (state === 'build') { const k = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code), ids = buildIds(); if (k >= 0 && ids[k]) buildAct((buildCtx.pad.b === 'mod' ? 'm:' : 'b:') + ids[k]); if (e.code === 'Escape' || e.code === 'KeyB') closeBuild(); return; }
+  if (state === 'starmap') { if (e.code === 'Escape' || e.code === 'KeyS') state = 'title'; else if (e.code === 'Enter') startSurvival(); return; }
+  if (state === 'title' && e.code === 'KeyS') { state = 'starmap'; smSel = -1; return; }
+  if (state === 'build') { const k = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8'].indexOf(e.code), ids = buildIds(); if (k >= 0 && ids[k]) buildAct((buildCtx.pad.b === 'mod' ? 'm:' : 'b:') + ids[k]); if (e.code === 'Escape' || e.code === 'KeyB') closeBuild(); return; }
   if (state === 'paused' && e.code === 'KeyQ') { quitRun(); return; }
   if (e.code === 'Space' && state === 'play') useBomb();
   if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
@@ -1816,6 +2127,7 @@ cv.addEventListener('pointerdown', e => {
   // GM 面板只用 G 键呼出（右下角按钮已去掉）
   if (state === 'codex') { codexClick(p); return; }
   if (state === 'hangar') { hangarAct(uiHit(p)); return; }
+  if (state === 'starmap') { smAct(uiHit(p)); return; }
   if (state === 'gacha') { gachaAct(uiHit(p)); return; }
   if (state === 'title' || state === 'over') { const a = uiHit(p); if (a) { titleAct(a); return; } }
   if (state === 'title' || state === 'over') { if (state === 'title') startGame(); else if (phaseT > (capRes ? 2.3 : 0.8)) restartRun(); return; }
@@ -1962,6 +2274,8 @@ function targets() {
     for (const t of boss.turrets) if (t.hp > 0) out.push({ kind: 't', ref: t, x: boss.x + t.dx, y: boss.y + t.dy, r: t.r || 26 });
     out.push({ kind: 'b', ref: boss, x: boss.x, y: boss.y + boss.def.oy, r: boss.def.r });
   }
+  // 星球据点（核心要挖开才算目标）
+  if (PLANET) for (const p of planets) { if (p.owned) continue; for (const f of p.foes) if (f.hp > 0) { const q = foeXY(f); out.push({ kind: 'p', ref: f, x: q.x, y: q.y, r: f.r }); } const c = p.core; if (c && c.open && c.hp > 0) { const q = foeXY(c); out.push({ kind: 'p', ref: c, x: q.x, y: q.y, r: c.r }); } }
   return out;
 }
 function nearestTargets(x, y, n, range) {
@@ -1975,6 +2289,7 @@ function applyHit(t, base, x, y, rgb = '120,220,255', proc = 1) {
   const S = player.s, crit = Math.random() < S.crit, d = base * (crit ? 2.5 : 1);
   if (t.kind === 'e') { damageEnemy(t.ref, t.ref.burn > 0 && player.weapon === 'flame' && player.branch.flame === 'melt' ? d * 1.4 : d); const dx = t.ref.x - player.x, dy = t.ref.y - player.y, l = Math.hypot(dx, dy) || 1, k = Math.min(d, 30) * 5; push(t.ref, dx / l * k, dy / l * k); }
   else if (t.kind === 't') damageTurret(t.ref, d);
+  else if (t.kind === 'p') foeHit(t.ref, d);
   else damageBoss(d);
   if (Math.random() < proc * 8) hitSpark(x, y, crit ? '255,230,90' : rgb);
   if (S.chain && Math.random() < S.chain * proc) chainFrom(x, y, t.ref);
@@ -1998,10 +2313,12 @@ function boltFx(x, y, x2, y2, c) { addPart({ t: 'bolt', x, y, x2, y2, vx: 0, vy:
 function tAlive(t) {
   if (!t || t.ref.hp <= 0) return false;
   if (t.kind === 'e') return enemies.includes(t.ref);
+  if (t.kind === 'p') return true;
   return boss && !boss.entering && boss.dying <= 0 && (t.kind === 'b' ? t.ref === boss : boss.turrets.includes(t.ref));
 }
 function tPos(t) {
   if (t.kind === 'e') return { x: t.ref.x, y: t.ref.y };
+  if (t.kind === 'p') return foeXY(t.ref);
   if (t.kind === 't') return { x: boss.x + t.ref.dx, y: boss.y + t.ref.dy };
   return { x: boss.x, y: boss.y + boss.def.oy };
 }
@@ -2181,7 +2498,8 @@ function fireSubOne(dt, rate) {
   } else if (P.sub === 'rocket' && P.subT <= 0) {
     P.subT = (1.1 - L * .15) / rate;
     const n = L >= 3 ? 2 : 1;
-    for (let k = 0; k < n; k++) pBullets.push({ x: P.x + (n === 1 ? 0 : k ? 20 : -20), y: P.y - 20, vx: 0, vy: -120, dmg: (8 + L * 3) * S.dmgMul, rocket: true, rad: 50 + L * 12 });
+    // 3 级一次两发，单发伤害打七折，免得 3 级突然翻倍
+    for (let k = 0; k < n; k++) pBullets.push({ x: P.x + (n === 1 ? 0 : k ? 20 : -20), y: P.y - 20, vx: 0, vy: -120, dmg: (8 + L * 3) * S.dmgMul * (L >= 3 ? .7 : 1), rocket: true, rad: 50 + L * 12 });
   } else if (P.sub === 'orbit') {
     // 环绕雷电：切碎子弹 + 接触伤害 + 定时放电
     P.orbA += dt * 3.5;
@@ -2203,7 +2521,7 @@ function fireSubOne(dt, rate) {
   } else if (P.sub === 'hole' && P.subT <= 0) {
     P.subT = (4.2 - L * .5) / rate;
     // 引力黑洞：飞得更慢、范围更大；有强吸力，所以伤害只有原来的一半左右
-    holes.push({ x: P.x, y: P.y - 70, vy: -60, life: 3 + L * .5, max: 3 + L * .5, r: 100 + L * 18, dps: (6 + L * 3) * S.dmgMul, a: 0, pT: 0 });
+    holes.push({ x: P.x, y: P.y - 70, vy: -60, life: 3 + L * .5, max: 3 + L * .5, r: 100 + L * 18, dps: (6 + L * 3) * S.dmgMul * .7, a: 0, pT: 0 });   // 实测偏强，伤害七折
     tone(110, .6, 'sine', .08, .5);
   } else if (P.sub === 'shotgun' && P.subT <= 0) {
     P.subT = (.8 - L * .08) / rate;
@@ -2212,7 +2530,7 @@ function fireSubOne(dt, rate) {
     tone(190, .06, 'square', .025);
   } else if (P.sub === 'pulse' && P.subT <= 0) {
     P.subT = (3.4 - L * .45) / rate;
-    subFx.push({ type: 'pulse', x: P.x, y: P.y, r: 12, max: 120 + L * 30, dmg: (10 + L * 5) * S.dmgMul, hit: new Set(), t: 0 });
+    subFx.push({ type: 'pulse', x: P.x, y: P.y, r: 12, max: 120 + L * 30, dmg: (10 + L * 5) * S.dmgMul * .5, hit: new Set(), t: 0 });   // 实测远超其他副武器，伤害减半
     tone(300, .3, 'sine', .07, -.5);
   } else if (P.sub === 'strike' && P.subT <= 0) {
     const tg = targets().filter(t => t.y > 20 && t.y < H - 80).sort((a, b) => b.ref.hp - a.ref.hp).slice(0, L >= 3 ? 2 : 1);
@@ -3197,7 +3515,8 @@ function freshSave() { return { crystals: 2000, fighters: { silver: 1 }, gear: {
 let save = (() => { try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && s.fighters && s.gear && s.load && s.pity) return s; } catch (e) { } return freshSave(); })();
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { } }
 curSkin = save.fighters[save.load.fighter] ? save.load.fighter : 'silver';
-if (!Array.isArray(save.planets)) save.planets = [];   // 已占领的星球（每颗给之后的生存模式永久加成）
+if (!Array.isArray(save.planets)) save.planets = [];
+if (typeof save.ore !== 'number') save.ore = 0;   // 局外矿石仓库（升级星球基地）   // 已占领的星球（每颗给之后的生存模式永久加成）
 const ownedFighters = () => SKIN_IDS.filter(id => save.fighters[id]);
 const gearStar = k => save.gear[k] || 1;
 const starStr = n => '★'.repeat(n) + '☆'.repeat(5 - n);
@@ -3785,6 +4104,7 @@ function titleAct(a) {
   else if (a === 'home') state = 'title';
   else if (a === 'restart') restartRun();
   else if (a === 'surv') startSurvival();
+  else if (a === 'starmap') { state = 'starmap'; smSel = -1; }
   // （星球玩法已并入生存模式）
 }
 function gmMeta(a) {
@@ -5915,6 +6235,7 @@ function render() {
   if (state === 'title') { ctx.restore(); drawTitle(); return; }
   if (state === 'codex') { ctx.restore(); drawCodex(); return; }
   if (state === 'hangar') { ctx.restore(); drawHangar(); return; }
+  if (state === 'starmap') { ctx.restore(); drawStarMap(); return; }
   if (state === 'gacha') { ctx.restore(); drawGacha(); return; }
 
   if (PLANET) drawPlanets();
@@ -6133,6 +6454,7 @@ function render() {
   }
   ctx.drawImage(VIGNETTE, 0, 0, W, H);
   if (bloodScreen > 0) { ctx.globalAlpha = Math.min(1, bloodScreen); ctx.drawImage(BLOOD_SCREEN, 0, 0, W, H); ctx.globalAlpha = 1; }
+  if (PLANET && state !== 'over') drawPlanetEnv();
   drawHUD();
   if (PLANET && state !== 'over') drawPlanetHud();
   if (SURV && state !== 'over') drawOwnedCards();
@@ -6556,7 +6878,7 @@ function drawPaused() {
 }
 // 占领结算：星球缩略图、三颗星（占领 / 无伤 / 速攻）、数据、永久加成、星晶
 function drawCapRes() {
-  const r = capRes, p = r.p, t = phaseT, kk = p.kind % 4, pb = PLANET_BONUS[kk], cnt = planetBonusCount()[kk];
+  const r = capRes, p = r.p, t = phaseT, kk = p.kind % 4, pb = PLANET_BONUS[kk], cnt = planetBonusTotals()[kk];
   ctx.fillStyle = 'rgba(0,10,24,.84)'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const pop = Math.min(1, t * 2.5), cy = 128, rr = 58 * (.6 + .4 * pop), k = rr / p.R;
@@ -6642,7 +6964,8 @@ function drawTitle() {
   ctx.globalAlpha = .6 + .4 * Math.sin(time * 4);
   ctx.font = `bold 17px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText('点击屏幕 / 按 Enter 出击 · 闯关模式', W / 2, 552);
   ctx.globalAlpha = 1;
-  uiBtn(W / 2 - 125, 570, 250, 40, '生存模式 [V]', 'surv', { fill: 'rgba(15,95,75,.9)', stroke: '#8fffd0', fs: 14 });
+  uiBtn(W / 2 - 125, 570, 160, 40, '生存模式 [V]', 'surv', { fill: 'rgba(15,95,75,.9)', stroke: '#8fffd0', fs: 14 });
+  uiBtn(W / 2 + 41, 570, 84, 40, '星图 [S]', 'starmap', { fill: 'rgba(30,60,110,.9)', stroke: '#9fd0ff', fs: 13 });
   uiBtn(14, 620, 118, 38, '机库 [H]', 'hangar');
   uiBtn(143, 620, 118, 38, '抽卡 [J]', 'gacha', { fill: 'rgba(120,70,15,.85)', stroke: '#ffd780' });
   uiBtn(272, 620, 118, 38, '模型库 [L]', 'codex');
@@ -6807,7 +7130,7 @@ function frame(now) {
     let rem = dt * gm.speed;
     while (rem > 1e-4 && state === 'play') { const s = Math.min(rem, 1 / 60); update(s); rem -= s; }
   }
-  else if (state === 'title' || state === 'codex' || state === 'hangar' || state === 'gacha') { time += dt; bgUpdate(dt); gachaT += dt; if (gachaMsgT > 0) gachaMsgT -= dt; }
+  else if (state === 'title' || state === 'starmap' || state === 'codex' || state === 'hangar' || state === 'gacha') { time += dt; bgUpdate(dt); gachaT += dt; if (gachaMsgT > 0) gachaMsgT -= dt; }
   else if (state === 'choose' || state === 'build') time += dt;
   else if (state === 'over') { time += dt; phaseT += dt; bgUpdate(dt * .5); updateParts(dt); }
   render();
