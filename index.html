@@ -1407,7 +1407,7 @@ function foeHit(f, d) {
 function foeDie(f) {
   const p = f.p, x = p.x + f.dx, y = p.y + f.dy, core = f.type === 'core';
   f.hp = 0; explosion(x, y, core ? 70 : 34); shake = Math.max(shake, core ? 16 : 6); noise(.4, .2, 500);
-  if (core) { flash = .6; for (let k = 0; k < 8; k++) { const a = k / 8 * TAU; explosion(x + Math.cos(a) * 50, y + Math.sin(a) * 50, 30); } planetCaptured(p); return; }
+  if (core) { flash = .6; for (let k = 0; k < 8; k++) { const a = k / 8 * TAU; explosion(x + Math.cos(a) * 50, y + Math.sin(a) * 50, 30); } startDefense(p); return; }
   for (let k = 0; k < 3; k++) dropOre(x + rnd(-14, 14), y + rnd(-14, 14), 1);
   dropGem(x, y, 15 + 5 * p.i);
   if (f.type === 'gen' && !gensAlive(p)) floatText(W / 2, SURV_Y - 150, '护盾解除', 18, '#ff9ab0', 2.2);
@@ -1482,15 +1482,69 @@ function planetStep(dt) {
     foeStep(tp, dt);
   }
   if (tp && state === 'play') baseStep(tp, dt);
+  if (tp && tp.def && state === 'play') defStep(tp, dt);
   pBullets = pBullets.filter(b => !b.dead); eBullets = eBullets.filter(b => !b.dead);
 }
-// 占领完成（核心被摧毁）：记进存档，按三颗星发星晶，进入结算画面；这一局到此结束
+// ================= 守护：核心被摧毁后，敌军分 3 波反扑，冲向我方指挥中心；守住才算占领成功 =================
+const DEF_WAVES = 3;
+function startDefense(p) {
+  if (p.def) return;
+  for (const f of p.foes) if (f.hp > 0) { f.hp = 0; explosion(p.x + f.dx, p.y + f.dy, 30); }   // 残余据点随核心一起瓦解
+  const hub = p.sites[BASE_N]; hub.hp = hub.max = Math.round(500 * (1 + .3 * p.i));
+  p.def = { wave: 0, t: 6, ids: [] };
+  floatText(W / 2, SURV_Y - 170, '核心摧毁 · 敌军即将反扑', 20, '#ffd28a', 2.6);
+  floatText(W / 2, SURV_Y - 140, '守住指挥中心', 15, '#bff4ff', 2.6);
+  sfxWarning();
+}
+function spawnDefender(p, role) {
+  const hub = p.sites[BASE_N], ha = Math.atan2(hub.dy, hub.dx), a = ha + rnd(-.9, .9), dist = Math.hypot(hub.dx, hub.dy) + rnd(560, 760);
+  const type = role === 'raid' ? (Math.random() < .5 ? 'dart' : 'rammer') : (Math.random() < .5 ? 'fighter' : 'sniper');
+  spawnEnemy(type, p.x + Math.cos(a) * dist, p.y + Math.sin(a) * dist, { vx: 0, vy: 0 });
+  const e = enemies[enemies.length - 1], b = survBaseLv(); e.lvBase = b; e.elv = b + lvRoll(); const k = lvHpK(e.elv); e.hp *= k; e.maxHp *= k; e.fireT = rnd(1, 2);
+  const built = p.sites.filter(s => s.b);
+  if (role === 'raid') e.raid = Math.random() < .6 ? hub : built[Math.random() * built.length | 0]; else e.siege = hub;
+  return e;
+}
+function defStep(p, dt) {
+  const d = p.def;
+  survSpawnT += dt * .5;   // 守护期间普通刷怪放慢一半，主要是反扑的敌军
+  d.ids = d.ids.filter(e => e.hp > 0 && enemies.includes(e));
+  if (d.ids.length) return;
+  if (d.wave >= DEF_WAVES) { defenseWon(p); return; }
+  if ((d.t -= dt) > 0) return;
+  d.wave++; d.t = 7;
+  const n = 7 + d.wave * 4 + p.i * 2;
+  for (let k = 0; k < n; k++) d.ids.push(spawnDefender(p, k < n * .55 ? 'raid' : 'siege'));
+  floatText(W / 2, SURV_Y - 160, `第 ${d.wave} 波敌军来袭`, 18, '#ff9a7a', 2); sfxWarning();
+}
+// 远程敌机：停在指挥中心外 230 左右绕圈，朝它开炮（炮弹打到建筑会掉血，护盾塔能挡）
+function siegeMove(e, edt) {
+  const s = e.siege; if (!s || !s.p.def || s.p.owned) { e.siege = null; return false; }
+  const p = s.p, x = p.x + s.dx, y = p.y + s.dy, dx = x - e.x, dy = y - e.y, d = Math.hypot(dx, dy) || 1, sp = 120 * edt;
+  if (d > 230) { e.x += dx / d * sp; e.y += dy / d * sp; } else { const t = Math.atan2(dy, dx) + Math.PI / 2; e.x += Math.cos(t) * sp * .5; e.y += Math.sin(t) * sp * .5; }
+  e.x0 = e.x; e.fx = dx / d; e.fy = dy / d;
+  e.siegeT = (e.siegeT ?? rnd(.5, 1.5)) - edt;
+  if (d < 300 && e.siegeT <= 0) { e.siegeT = 1.8; eShot(e.x, e.y, Math.atan2(dy, dx), 210, 'big'); }
+  return true;
+}
+function defenseWon(p) {
+  if (p.owned) return; const hub = p.sites[BASE_N];
+  p.defHubK = hub.hp / hub.max;
+  floatText(W / 2, SURV_Y - 160, '守护成功', 24, '#8ff0ff', 2);
+  planetCaptured(p);
+}
+function defenseLost(p) {
+  if (p.lost) return; p.lost = true; const hub = p.sites[BASE_N], x = p.x + hub.dx, y = p.y + hub.dy;
+  for (let k = 0; k < 6; k++) explosion(x + rnd(-40, 40), y + rnd(-40, 40), 40);
+  flash = .5; shake = 14; player.lostPlanet = p.name; finishRun();
+}
+// 占领完成（守住了反扑）：记进存档，按三颗星发星晶，进入结算画面；这一局到此结束
 function planetCaptured(p) {
   if (p.owned) return;
   p.owned = true; p.inOrbit = false; planetOwned++;
   flash = .5; sfxWin();
   const P = player, took = survT - p.bornT, hold = survT - Math.max(0, p.orbitT0);
-  const stars = [{ n: '占领成功', ok: true }, { n: '无伤占领', ok: !p.hurt }, { n: '速攻', sub: '进入轨道 3 分钟内', ok: hold <= 180 }];
+  const stars = [{ n: '守护成功', ok: true }, { n: '无伤', ok: !p.hurt }, { n: '基地完好', sub: '指挥中心剩 60% 以上', ok: (p.defHubK ?? 1) >= .6 }];
   const got = stars.filter(s => s.ok).length, bonus = STAGE_REWARD + (got - 1) * 60;
   const done0 = sectorsDone(); save.planets.push({ k: p.kind, name: p.name, lv: 1, sec: p.sec, slot: p.slot }); save.target = null;
   const unlock = sectorsDone() > done0 && SECTORS[sectorsDone()] ? SECTORS[sectorsDone()].name : ''; save.crystals += bonus; P.earned = (P.earned || 0) + bonus;
@@ -1524,7 +1578,9 @@ const MODS = {
 const modCost = id => MODS[id].base + MODS[id].step * (modN[id] || 0);
 const modOk = id => { const m = MODS[id]; return (!m.max || (modN[id] || 0) < m.max) && (!m.cond || m.cond(player)); };
 function siteHit(s, d) {
-  if (!s.b || s.hub) return;   // 指挥中心打不坏 s.hp -= d; s.hit = .15;
+  if (!s.b || (s.hub && !s.p.def)) return;   // 指挥中心平时打不坏，守护阶段才是敌军的目标
+  s.hp -= d; s.hit = .15;
+  if (s.hub) { if (s.hp <= 0) defenseLost(s.p); return; }
   if (s.hp <= 0) { const p = s.p, x = p.x + s.dx, y = p.y + s.dy; explosion(x, y, 30); floatText(x, y - 30, BUILDS[s.b].name + ' 被摧毁', 13, '#ff8a7a', 1.4); s.b = null; s.lv = 0; s.hp = s.max = 0; }
 }
 // 袭击者：飞向目标建筑自爆
@@ -1578,7 +1634,7 @@ function baseStep(p, dt) {
   p.shells = p.shells.filter(s => !s.dead);
   // 袭击：有建筑之后，每隔一段时间来一小队冲向建筑
   const live = p.sites.filter(s => s.b && !s.hub);
-  if (live.length && (p.raidT -= dt) <= 0) {
+  if (live.length && !p.def && (p.raidT -= dt) <= 0) {
     p.raidT = Math.max(16, 30 - p.i * 3);
     const s = live[Math.random() * live.length | 0], n = 2 + Math.min(4, p.i + Math.floor(survT / 150));
     for (let k = 0; k < n; k++) {
@@ -1710,7 +1766,11 @@ function drawSite(s, x, y) {
     ctx.globalCompositeOperation = 'lighter'; drawGlow(0, -12, 14 + lv * 6, col, .6 + .3 * Math.sin(time * 5)); ctx.globalCompositeOperation = 'source-over';
   } else if (s.b === 'mod') drawGlyph('wrench', 0, 0, s.hub ? 28 : 22, C);
   ctx.restore();
-  if (s.hub) { ctx.font = `bold 11px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.fillStyle = '#bff4ff'; ctx.strokeText('指挥中心', x, y + 42); ctx.fillText('指挥中心', x, y + 42); return; }
+  if (s.hub) {
+    ctx.font = `bold 11px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.fillStyle = '#bff4ff'; ctx.strokeText('指挥中心', x, y + 42); ctx.fillText('指挥中心', x, y + 42);
+    if (s.p.def) { const k = Math.max(0, s.hp / s.max); ctx.fillStyle = 'rgba(0,0,0,.65)'; ctx.fillRect(x - 30, y + 52, 60, 6); ctx.fillStyle = k > .5 ? '#7fdcff' : k > .25 ? '#ffd27a' : '#ff6a5a'; ctx.fillRect(x - 30, y + 52, 60 * k, 6); }
+    return;
+  }
   if (s.b) {
     for (let i = 0; i < lv; i++) { ctx.fillStyle = `rgb(${col})`; ctx.beginPath(); ctx.arc(x - (lv - 1) * 4 + i * 8, y + 30, 2.2, 0, TAU); ctx.fill(); }
     if (s.hp < s.max) { ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - 16, y + 35, 32, 4); ctx.fillStyle = s.hp / s.max > .4 ? '#7dff9a' : '#ff6a5a'; ctx.fillRect(x - 16, y + 35, 32 * Math.max(0, s.hp / s.max), 4); }
@@ -1829,7 +1889,15 @@ function drawPlanetHud() {
   let label = '';
   if (t) {
     const hx = P.x, hy = P.y + HIT_OY, d = Math.hypot(t.x - hx, t.y - hy);
-    if (!t.inOrbit && t.orbitT0 < 0) { label = `前往 ${t.name} · ${Math.max(0, Math.round((d - t.orbit) / 10))} 米`; if (d - t.R * 1.15 > 380) edgeArrow(t.x, t.y, '255,180,110'); }
+    if (t.def) {
+      // 守护阶段：底部条显示指挥中心血量
+      const D = t.def, hub = t.sites[BASE_N], k = Math.max(0, hub.hp / hub.max);
+      label = D.ids.length ? `守住指挥中心 · 第 ${D.wave}/${DEF_WAVES} 波 · 还剩 ${D.ids.length}` : D.wave >= DEF_WAVES ? '守护成功' : `第 ${D.wave + 1} 波 · ${Math.ceil(D.t)} 秒后来袭`;
+      ctx.fillStyle = 'rgba(6,20,36,.8)'; roundRect(bx, by, bw, 8, 4); ctx.fill();
+      ctx.fillStyle = k > .5 ? '#7fdcff' : k > .25 ? '#ffd27a' : '#ff6a5a'; roundRect(bx, by, Math.max(4, bw * k), 8, 4); ctx.fill();
+      edgeArrow(t.x + hub.dx, t.y + hub.dy, '120,220,255');
+    }
+    else if (!t.inOrbit && t.orbitT0 < 0) { label = `前往 ${t.name} · ${Math.max(0, Math.round((d - t.orbit) / 10))} 米`; if (d - t.R * 1.15 > 380) edgeArrow(t.x, t.y, '255,180,110'); }
     else {
       const gens = t.foes.filter(f => f.type === 'gen'), alive = gens.filter(f => f.hp > 0);
       let frac, col, tx, ty;
@@ -2161,6 +2229,7 @@ function survEnemyMove(e, edt) {
   if (e.shT > 0) e.shT -= edt;
   const fly = () => { e.x += e.vx * edt; e.y += e.vy * edt; e.x0 = e.x; };
   if (e.raid && raidMove(e, edt)) return;   // 袭击建筑的敌人：飞向目标建筑
+  if (e.siege && siegeMove(e, edt)) return;   // 守护阶段的远程敌机：炮击指挥中心
   if (ENEMY_ART[e.type] && ENEMY_ART[e.type].spin || e.lock) { fly(); e.fx = e.vx; e.fy = e.vy; return; }
   // 蓄力冲刺：进入范围后原地蓄力（有红光预警），再沿锁定方向猛冲一段
   const D = SURV_DASH[e.type];
@@ -2799,7 +2868,7 @@ function fireVulcan(eff, rate, br) {
     const n = 3 + eff * 2, span = .25 + eff * .09;
     for (let i = 0; i < n; i++) { const k = i / (n - 1) - .5; shot(k * 34, k * 2 * span, .7); }
   } else if (br === 'bounce') {
-    for (const [ox, a] of PATTERNS[eff]) shot(ox, a * 2.5 + Math.sign(ox) * .22, 1);
+    for (const [ox, a] of PATTERNS[eff]) shot(ox, a * 2.5 + Math.sign(ox) * .22, 1.5);   // 斜射容易打空，单发伤害 +50%
   } else {
     for (const [ox, a] of PATTERNS[eff]) shot(ox, a, br === 'ap' ? 1.4 : 1);
   }
@@ -2809,10 +2878,11 @@ function mkWave(x, y, vx, vy, o) { return Object.assign({ x, y, vx, vy, wave: tr
 function fireWave(eff, rate, br) {
   const P = player, S = P.s, shock = br === 'shock', helix = br === 'helix', boomer = br === 'boomer';
   P.fireT += (shock ? .42 : .3) / rate;
-  const o = { dmg: (8 + eff * 3) * S.dmgMul * (shock ? 1.35 : helix ? .7 : 1), grow: (16 + eff * 18) * (shock ? 1.6 : 1), shock, boomer,
+  // 回旋镰刃：生存模式里玩家在屏幕中间、上方空间短，飞得慢一点、折返得快一点，不然还没回头就飞出屏幕了
+  const o = { dmg: (8 + eff * 3) * S.dmgMul * (shock ? 1.55 : helix ? .7 : 1), grow: (16 + eff * 18) * (shock ? 1.6 : 1), shock, boomer, dec: SURV ? 1100 : 900,
     c: LOOK.emis };
   if (helix) for (const s of [-1, 1]) pBullets.push(mkWave(P.x, P.y - 40, 0, -560, Object.assign({}, o, { helix: s, x0: P.x, ht: 0 })));
-  else pBullets.push(mkWave(P.x, P.y - 40, 0, boomer ? -950 : -620, o));
+  else pBullets.push(mkWave(P.x, P.y - 40, 0, boomer ? (SURV ? -760 : -950) : -620, o));
   for (let i = 1; i <= S.spread; i++) for (const sd of [-1, 1])
     pBullets.push(mkWave(P.x + sd * 20, P.y - 30, sd * (140 + i * 60), -560, Object.assign({}, o, { dmg: o.dmg * .6, grow: 30, helix: 0, boomer: false })));
 }
@@ -3490,11 +3560,11 @@ function updateBullets(dt) {
       b.w = Math.min(b.grow, b.w + 160 * dt);
       if (b.boomer && b.hx !== undefined) {
         // 生存模式：沿机头方向减速、折返，回程时向玩家所在的中线收拢
-        b.vx -= b.hx * 900 * dt; b.vy -= b.hy * 900 * dt;
+        b.vx -= b.hx * (b.dec || 900) * dt; b.vy -= b.hy * (b.dec || 900) * dt;
         if (!b.back && b.vx * b.hx + b.vy * b.hy < 0) { b.back = true; b.hits = new Set(); }
         if (b.back) { const px = -b.hy, py = b.hx, l = (player.x - b.x) * px + (player.y - b.y) * py, k = Math.min(1, dt * 2.5); b.x += px * l * k; b.y += py * l * k; }
       } else if (b.boomer) {
-        b.vy += 900 * dt;
+        b.vy += (b.dec || 900) * dt;
         if (!b.back && b.vy > 0) { b.back = true; b.hits = new Set(); }
         if (b.back) b.x += (player.x - b.x) * Math.min(1, dt * 2.5);
       }
@@ -3512,6 +3582,7 @@ function updateBullets(dt) {
     if (b.bounce > 0) {
       if (b.x < 4 || b.x > W - 4) { b.vx = -b.vx; b.x = clamp(b.x, 4, W - 4); b.bounce--; b.hits = null; hitSpark(b.x, b.y, '150,230,255'); }
       else if (b.y < 4) { b.vy = -b.vy; b.y = 4; b.bounce--; b.hits = null; hitSpark(b.x, b.y, '150,230,255'); }
+      else if (SURV && b.y > H - 4) { b.vy = -b.vy; b.y = H - 4; b.bounce--; b.hits = null; hitSpark(b.x, b.y, '150,230,255'); }   // 生存模式子弹四面八方飞，底边也反弹
     }
     if (b.y < -40 || b.x < -60 || b.x > W + 60 || b.y > H + 40 || (b.mis && b.life <= 0)) { b.dead = true; continue; }
     if (b.wave) {
@@ -7362,7 +7433,7 @@ function drawGameOver() {
   ctx.fillStyle = 'rgba(10,0,4,.7)'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.shadowColor = '#f33'; ctx.shadowBlur = 16;
-  ctx.font = `900 48px ${FONT}`; ctx.fillStyle = player.quit ? '#8fe6ff' : '#ff5a4a'; ctx.fillText(player.quit ? '本局结束' : '任务失败', W / 2, 230);
+  ctx.font = `900 48px ${FONT}`; ctx.fillStyle = player.quit ? '#8fe6ff' : player.lostPlanet ? '#ffa04a' : '#ff5a4a'; ctx.fillText(player.quit ? '本局结束' : player.lostPlanet ? '基地失守' : '任务失败', W / 2, 230);
   ctx.shadowBlur = 0;
   ctx.font = `bold 20px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText('最终得分  ' + fmt(score), W / 2, 300);
   ctx.fillStyle = '#ffd23f'; ctx.fillText('最高纪录  ' + fmt(best), W / 2, 334);
