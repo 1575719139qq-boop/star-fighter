@@ -253,12 +253,15 @@ const FX = {};
 <script>
 'use strict';
 // ================= 基础 =================
-const W = 405, H = 720, TAU = Math.PI * 2;
+// 画面高度固定 720；宽度跟着屏幕比例在 405–600 之间变化（竖长手机 405，iPhone Duo 外屏 / 内屏、平板这类偏方的屏幕更宽，不留黑边）
+let W = 405; const H = 720, TAU = Math.PI * 2, UIW = 405;
 const FONT = "'PingFang SC','Microsoft YaHei','Heiti SC',sans-serif";
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 let scale = 1, dpr = 1;
 function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const nw = Math.round(Math.max(UIW, Math.min(600, H * innerWidth / Math.max(1, innerHeight))));
+  if (nw !== W) { const dx = (nw - W) / 2; W = nw; onWidthChange(dx); }
   scale = Math.min(innerWidth / W, innerHeight / H);
   cv.style.width = W * scale + 'px';
   cv.style.height = H * scale + 'px';
@@ -266,6 +269,24 @@ function resize() {
   cv.height = Math.round(H * scale * dpr);
 }
 addEventListener('resize', resize); resize();
+// 宽度变了：清掉按宽度画好的背景缓存，星星重新撒满，生存模式里把战机和世界一起挪到新的屏幕中间
+function onWidthChange(dx) {
+  try {
+    for (const k in NEBULAE) delete NEBULAE[k]; for (const k in ARENA_FLOORS) delete ARENA_FLOORS[k];
+    for (const s of stars) s.x = rnd(0, W); for (const d of dust) d.x = rnd(0, W); for (const m of motes) m.x = rnd(0, W);
+    if (player && SURV) { player.x += dx; if (player.tx !== undefined) player.tx += dx; worldShift(dx, 0); }
+  } catch (e) { }   // 第一次调用时这些还没定义，没关系
+}
+// 按钮位置写死的界面（机库、抽卡、模型库、结算）：放在中间一条 405 宽的栏里画，两边补暗色
+const UI_COL = new Set(['hangar', 'gacha', 'codex', 'over']);
+const uiOff = () => (W - UIW) / 2;
+function uiCol(fn, fill) {
+  if (W === UIW) { fn(); return; }
+  const W0 = W;
+  if (fill) { ctx.fillStyle = fill; ctx.fillRect(0, 0, W0, H); }
+  ctx.save(); ctx.translate(uiOff(), 0); W = UIW;
+  try { fn(); } finally { W = W0; ctx.restore(); }
+}
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -2604,6 +2625,7 @@ function toLocal(e) { const r = cv.getBoundingClientRect(); return { x: (e.clien
 cv.addEventListener('pointerdown', e => {
   initAudio();
   const p = toLocal(e);
+  if (UI_COL.has(state)) p.x -= uiOff();   // 这些界面画在中间那条栏里
   // GM 面板只用 G 键呼出（右下角按钮已去掉）
   if (state === 'codex') { codexClick(p); return; }
   if (state === 'hangar') { hangarAct(uiHit(p)); return; }
@@ -6742,11 +6764,11 @@ function render() {
   if (shake > 0 && state === 'play') ctx.translate(rnd(-shake, shake) * .5, rnd(-shake, shake) * .5);
   drawBg(time);
   if (state === 'title') { ctx.restore(); drawTitle(); return; }
-  if (state === 'codex') { ctx.restore(); drawCodex(); return; }
-  if (state === 'hangar') { ctx.restore(); drawHangar(); return; }
+  if (state === 'codex') { ctx.restore(); uiCol(drawCodex, 'rgba(2,8,18,.8)'); return; }
+  if (state === 'hangar') { ctx.restore(); uiCol(drawHangar, 'rgba(2,8,18,.8)'); return; }
   if (state === 'starmap') { ctx.restore(); drawStarMap(); return; }
   if (state === 'tech') { ctx.restore(); drawTech(); return; }
-  if (state === 'gacha') { ctx.restore(); drawGacha(); return; }
+  if (state === 'gacha') { ctx.restore(); uiCol(drawGacha, 'rgba(2,8,18,.8)'); return; }
 
   if (PLANET) drawPlanets();
   for (const p of pickups) drawPickup(p);
@@ -6979,7 +7001,7 @@ function render() {
   if (state === 'paused') drawPaused();
   if (state === 'choose') drawChoice();
   if (state === 'build') drawBuild();
-  if (state === 'over') drawGameOver();
+  if (state === 'over') uiCol(drawGameOver, 'rgba(0,6,16,.6)');
 }
 // 卡牌等级与升级前后的数值；返回 null 表示这张卡没有等级（换装、维修、奖金等）
 function cardLv(u) {
