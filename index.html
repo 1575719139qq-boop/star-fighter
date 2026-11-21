@@ -1071,11 +1071,15 @@ function survAim(dt) {
   if (boss && !boss.entering && boss.dying <= 0) for (const t of [...boss.turrets.filter(t => t.hp > 0).map(t => ({ x: boss.x + t.dx, y: boss.y + t.dy })), { x: boss.x, y: boss.y + boss.def.oy }]) { const d = (t.x - cx) ** 2 + (t.y - cy) ** 2; if (d < bd) { bd = d; best = t; } }
   // 星球据点也算瞄准目标（核心挖开后才算）
   if (PLANET) for (const t of targets()) if (t.kind === 'p') { const d = ((t.x - cx) ** 2 + (t.y - cy) ** 2) * (t.ref.type === 'core' ? .25 : 1); if (d < bd) { bd = d; best = t; } }
+  // 锁定不乱跳：当前目标还活着、在 600 内，就一直打它，除非出现近得多（不到 0.6 倍距离）的敌人
+  const cur = P.aimE && P.aimE.hp > 0 && enemies.includes(P.aimE) ? P.aimE : null;
+  if (cur) { const cd = (cur.x - cx) ** 2 + (cur.y - cy) ** 2; if (cd < 600 * 600 && !(best && bd < cd * .36)) { best = cur; bd = cd; } }
+  P.aimE = best && enemies.includes(best) ? best : null;
   if (best) P.aimA = Math.atan2(best.x - cx, -(best.y - cy));
   else if (P.mvx || P.mvy) P.aimA = Math.atan2(P.mvx, -P.mvy);
   if (P.aimA === undefined) P.aimA = 0;
   const diff = ((P.aimA - P.ang + Math.PI * 3) % TAU) - Math.PI;
-  P.ang += clamp(diff, -11 * dt, 11 * dt);
+  P.ang += clamp(diff, -6 * dt, 6 * dt);   // 转向速度放慢（原来 11），不再一下甩过去
 }
 let SF_ROT = null;
 function foeXY(f) {
@@ -2058,15 +2062,33 @@ function techAct(a) {
     save.ore -= d.cost; save.tech = save.tech || {}; save.tech[d.id] = true; persist(); sfxPick();
   }
 }
+// 敌人等级：每级血量 +17%，经验约按血量成长
+const lvHpK = lv => 1 + (lv - 1) * .17;
+const survBaseLv = () => 1 + Math.floor(survT / 30) + 2 * Math.round((runHpK - 1) / .3);
+function lvRoll() { const r = Math.random(); return r < .65 ? 0 : r < .9 ? 1 + (Math.random() * 2 | 0) : 3 + (Math.random() * 3 | 0); }
+// 比同时期普通敌人高的个体，头上显示等级：高 1–2 级蓝色，高 3 级以上紫色，精英个体金色
+function drawEnemyLevels() {
+  ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = `bold 10px ${FONT}`; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)';
+  for (const e of enemies) {
+    if (!e.elv || e.hp <= 0 || e.x < -40 || e.x > W + 40 || e.y < -40 || e.y > H + 40) continue;
+    const d = e.elv - (e.lvBase || e.elv); if (d < 1 && !e.champ) continue;
+    const c = e.champ ? '#ffd23f' : d >= 3 ? '#d29bff' : '#8fd0ff', t = 'Lv' + e.elv, y = e.y - e.r - 9;
+    ctx.strokeText(t, e.x, y); ctx.fillStyle = c; ctx.fillText(t, e.x, y);
+  }
+  ctx.restore();
+}
 function survSpawn(type, a, elite) {
   const R = 470 + rnd(0, 60);
   if (PLANET) for (let i = 0; i < 8 && planetSolidAt(player.x + Math.cos(a) * R, player.y + Math.sin(a) * R); i++) a += .8;   // 不在岩层里刷怪
   spawnEnemy(type, player.x + Math.cos(a) * R, player.y + Math.sin(a) * R, { vx: 0, vy: 0 });
-  // 敌人血量随存活时间成长：每 200 秒 +100%（开局火力弱，成长太快会形成"杀不动 → 没经验 → 拿不到卡"的死循环）
-  const e = enemies[enemies.length - 1], k = (1 + survT / SURV_HP_T) * (elite ? 1.6 : 1);
-  e.hp *= k * runHpK; e.maxHp *= k * runHpK; e.fireT = rnd(1.2, 2.6);   // runHpK：目标星区越靠后敌人越硬
-  // 精英个体：1 分钟后偶尔出现，体型 1.35 倍、血量 3 倍、更快，带金色光环，掉落更好
-  if (!elite && survT > 60 && Math.random() < SURV_CHAMP) { e.champ = true; e.r *= 1.35; e.hp *= 3; e.maxHp *= 3; }
+  // 敌人等级：基础等级随存活时间上涨（每 30 秒 +1，越靠后的星区起点越高），个体再随机高 0–5 级；
+  // 血量按等级成长（每级 +17%），经验跟着血量走。精英个体 +3 级、血量再翻倍，带金色光环
+  const e = enemies[enemies.length - 1], base = survBaseLv();
+  e.champ = !elite && survT > 60 && Math.random() < SURV_CHAMP;
+  e.lvBase = base; e.elv = base + lvRoll() + (elite ? 2 : 0) + (e.champ ? 3 : 0);
+  const k = lvHpK(e.elv) * (elite ? 1.2 : 1) * (e.champ ? 2 : 1);
+  e.hp *= k; e.maxHp *= k; e.fireT = rnd(1.2, 2.6);
+  if (e.champ) e.r *= 1.35;
   if (!BUG_ART.defs[type] && survT > 60) e.pal = [null, 'rust', 'navy', 'void'][Math.floor(survT / 60) % 4];
 }
 // 敌人移动：每种有自己的走位
@@ -2169,6 +2191,7 @@ function drawSurvUnder() {
   for (const e of enemies) {
     if (e.x < -80 || e.x > W + 80 || e.y < -80 || e.y > H + 80) continue;
     if (e.champ) drawGlow(e.x, e.y, e.r * 4.2, '255,200,60', .45 + .15 * Math.sin(time * 5 + e.ph));
+    else if (e.elv - e.lvBase >= 3) drawGlow(e.x, e.y, e.r * 3.4, '190,120,255', .35);   // 高等级个体：紫色光晕
     if (e.wind > 0) drawGlow(e.x, e.y, e.r * 3.4, '255,60,40', .8);
     if (e.type === 'pulser' && e.busy > 0) drawGlow(e.x, e.y, e.r * (2 + (1 - e.busy) * 3), '190,110,255', .9);
     if (e.shT > 0 && e.type !== 'shieldbot') {
@@ -2568,18 +2591,21 @@ function updatePlayer(dt) {
   fireSig(dt, rate);
   // 僚机（最多 5 架：左右各两架呈 V 字，第 5 架在正后方）
   while (P.wing.length < S.wingmen) P.wing.push({ x: P.x, y: P.y + 30, fireT: 0 });
-  const gd = P.wingType === 'guard';
+  const gd = P.wingType === 'guard', rate0 = rate;
   P.wing.forEach((w, i) => {
     const sl = (gd ? WING_SLOTS_GD : WING_SLOTS)[i % 5], tx = P.x + sl[0], ty = P.y + sl[1], k = Math.min(1, dt * 8);
     w.x += (tx - w.x) * k; w.y += (ty - w.y) * k;
     if (gd) for (const b of eBullets) if (!b.dead && (b.x - w.x) ** 2 + (b.y - w.y) ** 2 < 900) { b.dead = true; hitSpark(b.x, b.y, '120,255,200'); }
     w.fireT -= dt;
     if (w.fireT <= 0 && !hold) {
+      // 生存模式：僚机有自己的射速（不吃开局很低的攻速），并且各自瞄准身边最近的敌人；附近没敌人就不开火
+      const rate = SURV ? .45 + (S.aspd || 0) : rate0;
+      let wa = 0; if (SURV) { let bd = 460 * 460, bt = null; for (const t of targets()) { const q = (t.x - w.x) ** 2 + (t.y - w.y) ** 2; if (q < bd) { bd = q; bt = t; } } if (!bt) { w.fireT = .15; return; } wa = Math.atan2(bt.x - w.x, -(bt.y - w.y)); }
       const wt = P.wingType || 'gun', dm = (P.wingDmg || 1) * S.dmgMul * (WING_BAL[wt] || 1);   // 僚机平衡系数
       if (wt === 'seeker') { w.fireT = 1.2 / rate; for (const s of [-1, 1]) pBullets.push({ x: w.x, y: w.y - 10, vx: s * 160, vy: -320, dmg: 2.6 * dm, mis: true, needle: true, life: 2.4 }); }
-      else if (wt === 'lance') { w.fireT = .5 / rate; pBullets.push(Object.assign(mkShot(w.x, w.y - 14, 0, 2.4 * dm), { wing: true, pierce: 99, hits: new Set() })); }
-      else if (wt === 'scatter') { w.fireT = .3 / rate; for (const a of [-.24, 0, .24]) pBullets.push(Object.assign(mkShot(w.x, w.y - 12, a, .55 * dm), { wing: true })); }
-      else if (wt === 'guard') { w.fireT = .3 / rate; pBullets.push(Object.assign(mkShot(w.x, w.y - 14, 0, .4 * dm), { wing: true })); }
+      else if (wt === 'lance') { w.fireT = .5 / rate; pBullets.push(Object.assign(mkShot(w.x, w.y - 14, wa, 2.4 * dm), { wing: true, pierce: 99, hits: new Set() })); }
+      else if (wt === 'scatter') { w.fireT = .3 / rate; for (const a of [-.24, 0, .24]) pBullets.push(Object.assign(mkShot(w.x, w.y - 12, wa + a, .55 * dm), { wing: true })); }
+      else if (wt === 'guard') { w.fireT = .3 / rate; pBullets.push(Object.assign(mkShot(w.x, w.y - 14, wa, .4 * dm), { wing: true })); }
       else if (wt === 'tesla') {
         w.fireT = .9 / rate;
         let cx = w.x, cy = w.y, range = 230; const hit = new Set();
@@ -2592,14 +2618,15 @@ function updatePlayer(dt) {
         }
         if (!hit.size) w.fireT = .2; else tone(1400, .05, 'square', .02);
       }
-      else { w.fireT = .14 / rate; pBullets.push(Object.assign(mkShot(w.x, w.y - 14, 0, .7 * dm), { wing: true })); }
+      else { w.fireT = .14 / rate; pBullets.push(Object.assign(mkShot(w.x, w.y - 14, wa, .7 * dm), { wing: true })); }
     }
   });
   });
   // 护盾充能
   if (S.shield < S.shieldMax) { S.shieldT += dt; if (S.shieldT >= 12) { S.shieldT = 0; S.shield++; tone(990, .12, 'sine', .05); } }
   // 主武器达到 LV3 时触发进化
-  if (P.lv >= 3 && !P.branch[P.weapon] && !P.evoAsked[P.weapon]) { P.evoAsked[P.weapon] = true; choiceQueue.push('evo'); }
+  // 武器进化：主炮到 LV3 触发；生存模式里主炮等级只靠卡片，所以机师 12 级时也会触发，进化分支不会白白浪费
+  if ((P.lv >= 3 || (SURV && P.plevel >= 12)) && !P.branch[P.weapon] && !P.evoAsked[P.weapon]) { P.evoAsked[P.weapon] = true; choiceQueue.push('evo'); }
 }
 function mkShot(x, y, a, dmg) { return { x, y, vx: Math.sin(a) * 950, vy: -Math.cos(a) * 950, a, dmg, pierce: player.s.pierce }; }
 // 所有可被攻击的目标（敌机 / 首领炮台 / 首领本体）
@@ -3029,8 +3056,8 @@ const ETYPES = {
   shard: { r: 17, hp: 20, score: 150, od: 4, vy: 100 },
 };
 function spawnEnemy(type, x, y, o = {}) {
-  const d = ETYPES[type], hpMul = 1 + (stage - 1) * .35;
-  enemies.push(Object.assign({ type, x, y, x0: x, vx: 0, vy: d.vy ?? (type === 'heavy' ? 45 : type === 'carrier' ? 26 : type === 'sporemom' ? 38 : 150), hp: d.hp * hpMul, maxHp: d.hp * hpMul, r: d.r, t: 0, fireT: rnd(.8, 2.4), hit: 0, pvx: 0, pvy: 0, ph: rnd(0, TAU), sway: 0, pal: BUG_ART.defs[type] ? null : stageDef().pal }, o));
+  const d = ETYPES[type], lvB = SURV ? 1 : stage * 2 - 1, elv = SURV ? 1 : lvB + lvRoll(), hpMul = SURV ? 1 : lvHpK(elv);   // 闯关模式：基础等级随关卡上涨
+  enemies.push(Object.assign({ type, elv, lvBase: lvB, x, y, x0: x, vx: 0, vy: d.vy ?? (type === 'heavy' ? 45 : type === 'carrier' ? 26 : type === 'sporemom' ? 38 : 150), hp: d.hp * hpMul, maxHp: d.hp * hpMul, r: d.r, t: 0, fireT: rnd(.8, 2.4), hit: 0, pvx: 0, pvy: 0, ph: rnd(0, TAU), sway: 0, pal: BUG_ART.defs[type] ? null : stageDef().pal }, o));
 }
 function spawnWave() {
   // 按当前关卡的波次表抽取；母舰 / 巢穴巨兽 / 巡洋舰同屏只有一艘
@@ -3195,7 +3222,7 @@ function killEnemy(e) {
   // 分裂囊虫：死亡时裂出 3 只快速小虫
   if (e.type === 'splitter' && SURV) for (let i = 0; i < 3; i++) {
     const a = rnd(0, TAU); spawnEnemy('mite', e.x + Math.cos(a) * 10, e.y + Math.sin(a) * 10, { vx: Math.cos(a) * 140, vy: Math.sin(a) * 140 });
-    const m = enemies[enemies.length - 1]; m.hp = m.maxHp = 3 * (1 + survT / SURV_HP_T);
+    const m = enemies[enemies.length - 1]; m.elv = m.lvBase = e.lvBase || 1; m.hp = m.maxHp = 3 * lvHpK(m.elv);
   }
   if (BUG_ART.defs[e.type]) { gore(e.x, e.y, e.r * 1.2, true); sfxSquish(e.r); if (e.r > 25) shake = Math.max(shake, 8); blast(e.x, e.y, e.r * 3, e.r * 8); }
   else if (ENEMY_ART[e.type].spin) rockBreak(e);
@@ -3205,7 +3232,8 @@ function killEnemy(e) {
   score += pts; if (!SURV) floatText(e.x, e.y - 10, '+' + pts, e.type === 'heavy' ? 18 : 13, '#ffe27a');   // 生存模式不飘击杀分数（分数照加）
   if (overdrive <= 0) { odGauge += d.od * S.odGain; if (odGauge >= 100) startOverdrive(); }
   // 生存模式：击毁后爆出经验晶体，要飞过去捡（精英个体爆 5 倍）；闯关模式直接加经验
-  if (SURV) dropGem(e.x, e.y, XP_GAIN[e.type] * (e.champ ? 5 : 1)); else gainXP(XP_GAIN[e.type]);
+  const xk = Math.pow(lvHpK(e.elv || 1), .7) * (e.champ ? 2.5 : 1);   // 等级越高（血越厚）经验越多
+  if (SURV) dropGem(e.x, e.y, XP_GAIN[e.type] * xk); else gainXP(XP_GAIN[e.type] * xk);
   P.kills++;
   if (S.leech && P.kills % (S.leech >= 2 ? 25 : 40) === 0 && P.armor < P.maxArmor) { P.armor++; floatText(P.x, P.y - 50, '纳米修复 +1', 15, '#7dff9a'); }
   if (S.blast) {
@@ -6587,6 +6615,7 @@ function render() {
   if (SURV) drawSurvUnder();
   for (const e of enemies) if (e.y > -60 && (!SURV || (e.y < H + 80 && e.x > -80 && e.x < W + 80))) { drawEnemy(e); if (e.burn > 0) drawBurn(e); }
   if (SURV) drawSurvFx();
+  drawEnemyLevels();
   if (boss) drawBoss(boss);
 
   // 玩家子弹
