@@ -1143,7 +1143,8 @@ function survUpdate(dt) {
 }
 // 生存模式首领：在世界坐标里追着玩家跑（cx/cy 是首领相对"闯关招式坐标系"的偏移）。
 // 招式代码按闯关模式的屏幕坐标写的，所以更新时把首领和玩家都平移回招式坐标系，更新完再平移回来，新产生的子弹 / 小怪 / 粒子一起平移
-const SURV_BOSS_SPEED = 215, SURV_BOSS_RAGE_SPEED = 265;
+// 首领追击速度按玩家当前移速的比例算（原来固定 215 / 265，开局玩家只有 150，根本甩不掉）：平时 75%，残血狂暴 90%
+const SURV_BOSS_K = .75, SURV_BOSS_RAGE_K = .9;
 function survBossUpdate(dt) {
   const b = boss, P = player;
   if (b.cx === undefined) { b.cx = 0; b.cy = 0; }
@@ -1151,7 +1152,7 @@ function survBossUpdate(dt) {
     // 追向玩家，停在离玩家"首领半高 + 130"的距离外，不直接压到玩家身上
     const cy = b.y + (b.def.oy || 0), dx = P.x - b.x, dy = P.y + HIT_OY - cy, d = Math.hypot(dx, dy) || 1, stop = b.def.hh + 130;
     if (d > stop) {
-      const sp = (b.hp < b.maxHp * .5 ? SURV_BOSS_RAGE_SPEED : SURV_BOSS_SPEED) * (b.slow > 0 ? .6 : 1), step = Math.min(d - stop, sp * dt);
+      const sp = SURV_SPEED * survMoveK() * (b.hp < b.maxHp * .5 ? SURV_BOSS_RAGE_K : SURV_BOSS_K) * (b.slow > 0 ? .6 : 1), step = Math.min(d - stop, sp * dt);
       b.cx += dx / d * step; b.cy += dy / d * step; b.x += dx / d * step; b.y += dy / d * step;
     }
   }
