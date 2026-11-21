@@ -523,25 +523,36 @@ const rocketSpr = makeCanvas(20, 56, g => {
 // ================= 音效 =================
 let actx = null, muted = false, noiseBuf = null, lastBoom = 0;
 function initAudio() {
-  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { } }
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); sfxBus = actx.createGain(); sfxBus.gain.value = vols.sfx; sfxBus.connect(actx.destination); } catch (e) { } }
   if (actx && actx.state === 'suspended') actx.resume();
 }
 // ================= 背景音乐：主菜单 / 战斗两首（music/ 目录），无缝循环，切换时淡入淡出；M 键一起静音 =================
 const BGM_SRC = { menu: 'music/menu.mp3', battle: 'music/battle.mp3' }, BGM_VOL = .4;
-// 音乐音量（0–100%，每档 10%），记在本机；默认 40%
-let musicVol = (() => { try { const v = parseFloat(localStorage.getItem('starFighterMusicVol')); return isNaN(v) ? .4 : v; } catch (e) { return .4; } })();
-function setMusicVol(v) { musicVol = Math.round(Math.min(1, Math.max(0, v)) * 10) / 10; try { localStorage.setItem('starFighterMusicVol', musicVol); } catch (e) { } tone(520 + musicVol * 400, .05, 'triangle', .04); }
-const bgmTarget = () => BGM_VOL * musicVol * (state === 'paused' ? .4 : 1);
-// 音量条：[−] ▮▮▮▮▯▯ [+]
-function drawVolRow(x, y, label) {
+// 音量（0–100%，每档 10%）：音乐默认 40%，音效默认 100%；记在本机
+const VOL_KEY = { music: 'starFighterMusicVol', sfx: 'starFighterSfxVol' };
+const vols = { music: .4, sfx: 1 };
+for (const k in VOL_KEY) try { const v = parseFloat(localStorage.getItem(VOL_KEY[k])); if (!isNaN(v)) vols[k] = v; } catch (e) { }
+let sfxBus = null;   // 所有音效先经过这个总音量
+function setVol(k, v) {
+  vols[k] = Math.round(Math.min(1, Math.max(0, v)) * 10) / 10; try { localStorage.setItem(VOL_KEY[k], vols[k]); } catch (e) { }
+  if (sfxBus) sfxBus.gain.value = vols.sfx;
+  tone(520 + vols[k] * 400, .05, 'triangle', .05);
+}
+const bgmTarget = () => BGM_VOL * vols.music * (state === 'paused' ? .4 : 1);
+// 音量条：标签 [−] ▮▮▮▮▯▯ [+]
+function drawVolRow(x, y, label, k) {
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#9fe2ff'; ctx.fillText(label, x, y + 13);
-  const bx = x + ctx.measureText(label).width + 8;
-  uiBtn(bx, y, 28, 26, '−', 'vol-', { fs: 16 });
-  for (let i = 0; i < 10; i++) { ctx.fillStyle = i < Math.round(musicVol * 10) ? '#7fdcff' : 'rgba(255,255,255,.16)'; ctx.fillRect(bx + 34 + i * 7, y + 6 + (9 - i) * .9, 5, 14 - (9 - i) * .9); }
-  uiBtn(bx + 108, y, 28, 26, '+', 'vol+', { fs: 16 });
+  const bx = x + 32;
+  uiBtn(bx, y, 28, 26, '−', 'vol-:' + k, { fs: 16 });
+  for (let i = 0; i < 10; i++) { ctx.fillStyle = i < Math.round(vols[k] * 10) ? '#7fdcff' : 'rgba(255,255,255,.16)'; ctx.fillRect(bx + 34 + i * 7, y + 6 + (9 - i) * .9, 5, 14 - (9 - i) * .9); }
+  uiBtn(bx + 108, y, 28, 26, '+', 'vol+:' + k, { fs: 16 });
   ctx.textAlign = 'center';
 }
-function volAct(a) { if (a === 'vol-') { setMusicVol(musicVol - .1); return true; } if (a === 'vol+') { setMusicVol(musicVol + .1); return true; } return false; }
+function volAct(a) {
+  if (!a || !a.startsWith('vol')) return false;
+  const k = a.slice(5); if (!(k in vols)) return false;
+  setVol(k, vols[k] + (a[3] === '+' ? .1 : -.1)); return true;
+}
 const bgm = { buf: {}, cur: null, src: null, gain: null, vol: -1, loading: false };
 function bgmLoad() {
   if (bgm.loading || !actx) return; bgm.loading = true;
@@ -571,7 +582,7 @@ function tone(f, d, type = 'square', v = .06, slide = 0, delay = 0) {
   o.type = type; o.frequency.setValueAtTime(f, t);
   if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, f * slide), t + d);
   g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.001, t + d);
-  o.connect(g).connect(actx.destination); o.start(t); o.stop(t + d + .02);
+  o.connect(g).connect(sfxBus || actx.destination); o.start(t); o.stop(t + d + .02);
 }
 function noise(d, v = .2, freq = 900) {
   if (!actx || muted) return;
@@ -583,7 +594,7 @@ function noise(d, v = .2, freq = 900) {
   s.buffer = noiseBuf; f.type = 'lowpass';
   f.frequency.setValueAtTime(freq, t); f.frequency.exponentialRampToValueAtTime(50, t + d);
   g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.001, t + d);
-  s.connect(f).connect(g).connect(actx.destination); s.start(t); s.stop(t + d);
+  s.connect(f).connect(g).connect(sfxBus || actx.destination); s.start(t); s.stop(t + d);
 }
 function sfxBoom(s) { const n = performance.now(); if (n - lastBoom < 60) return; lastBoom = n; noise(clamp(s / 60, .2, 1.2), clamp(s / 120, .08, .35), 500 + s * 15); }
 function sfxWarning() { for (let i = 0; i < 3; i++) { tone(660, .35, 'sawtooth', .05, 0, i * .9); tone(440, .35, 'sawtooth', .05, 0, i * .9 + .4); } }
@@ -6914,8 +6925,9 @@ function drawPaused() {
   ctx.font = `900 40px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('暂停', W / 2, H / 2 - 90);
   uiBtn(W / 2 - 90, H / 2 - 40, 180, 46, '继续 [P]', 'resume', { fill: 'rgba(30,110,170,.9)', stroke: '#9fe8ff' });
   uiBtn(W / 2 - 90, H / 2 + 18, 180, 46, '结束本局 [Q]', 'quit', { fill: 'rgba(120,30,40,.85)', stroke: '#ff9a9a' });
-  drawVolRow(W / 2 - 92, H / 2 + 82, '音乐');
-  ctx.font = `14px ${FONT}`; ctx.fillStyle = '#9fe2ff'; ctx.fillText(muted ? '声音：关 (M)' : '声音：开 (M)', W / 2, H / 2 + 136);
+  drawVolRow(W / 2 - 86, H / 2 + 80, '音乐', 'music');
+  drawVolRow(W / 2 - 86, H / 2 + 112, '音效', 'sfx');
+  ctx.font = `14px ${FONT}`; ctx.fillStyle = '#9fe2ff'; ctx.fillText(muted ? '声音：关 (M)' : '声音：开 (M)', W / 2, H / 2 + 162);
 }
 // 占领结算：星球缩略图、三颗星（占领 / 无伤 / 速攻）、数据、永久加成、星晶
 function drawCapRes() {
@@ -6989,7 +7001,8 @@ function drawTitle() {
   ctx.font = `bold italic 18px ${FONT}`; ctx.fillStyle = '#9fe2ff'; ctx.fillText('S T A R   F I G H T E R', 0, 50);
   ctx.restore();
   drawCrystals(W - 12, 26);
-  drawVolRow(12, 13, '音乐');
+  drawVolRow(12, 8, '音乐', 'music');
+  drawVolRow(12, 38, '音效', 'sfx');
   // 机体成长展示：LV1 → LV5 循环
   const showLv = 1 + Math.floor(time / 1.4) % 5, sk = SKINS[curSkin], fam = GEAR[save.load.main].id, fg = FIGHTER_G[curSkin];
   drawPlayerShip(W / 2, 370 + Math.sin(time * 2) * 6, Math.sin(time * .8) * .3, 1.3, time, curSkin, true, showLv, null);
