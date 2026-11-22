@@ -1563,15 +1563,16 @@ function surfaceR(p, a) { for (let d = p.half; d > 0; d -= 4) if (planetSolidAt(
 // 布局：8 个地基均匀绕地表一圈（第一个朝向玩家来的方向）；敌方据点在地基之间；核心埋在背面地下
 // 布局：我方基地在玩家来的这一侧——6 个地基排成一道整齐的弧（同一高度），弧中间上方是指挥中心（改装台，自带）；
 // 敌方据点全在背面：核心埋在正背面地下，两个护盾发生器在核心两侧，炮台在更外侧，和我方基地隔开
-const BASE_N = 6, BASE_GAP = 285;   // 6 个地基，相邻两个沿弧线相隔约 285 像素（行星越大弧度越窄，不用飞更远）
+// 2026-11-22：地基改成绕整颗星球一圈（大约每 300 像素一个，8–14 个），建筑会慢慢铺满整颗星球；指挥中心在玩家来的那一侧
+const PAD_GAP = 300, ORE_STEP = 100;
 function planetLayout(p, a0) {
   const hpK = 1 + .45 * p.i;
-  let far = 0; for (let j = 0; j <= 24; j++) far = Math.max(far, surfaceR(p, a0 - 1.2 + j / 24 * 2.4));
-  const rr = far + 46, arc = Math.min(1.05, BASE_GAP * (BASE_N - 1) / (2 * rr)); p.baseA = a0; p.baseR = rr; p.baseArc = arc;
-  for (let k = 0; k < BASE_N; k++) { const a = a0 - arc + k * arc * 2 / (BASE_N - 1); p.sites.push({ p, k, a, dx: Math.cos(a) * rr, dy: Math.sin(a) * rr, b: null, lv: 0, t: 0, hp: 0, max: 0, aim: a + Math.PI / 2, armed: true, hit: 0 }); }
-  const hr = rr + 78; p.sites.push({ p, k: BASE_N, a: a0, dx: Math.cos(a0) * hr, dy: Math.sin(a0) * hr, b: 'mod', lv: 1, t: 0, hp: 1, max: 1, aim: a0, armed: true, hit: 0, hub: true });
-  // 第 2、5 个地基下面保证有浅层矿脉，给采矿机用
-  for (const k of [1, 4]) { const s = p.sites[k], d = surfaceR(p, s.a) - rnd(50, 75); p.veins.push({ x: Math.cos(s.a) * d, y: Math.sin(s.a) * d, r: rnd(20, 28), left: 36, found: false }); }
+  let far = 0; for (let j = 0; j < 48; j++) far = Math.max(far, surfaceR(p, j / 48 * TAU));
+  const rr = far + 46, n = clamp(Math.round(TAU * rr / PAD_GAP), 8, 14); p.baseA = a0; p.baseR = rr; p.baseArc = Math.PI; p.blv = {};
+  for (let k = 0; k < n; k++) { const a = a0 + (k + .5) / n * TAU; p.sites.push({ p, k, a, dx: Math.cos(a) * rr, dy: Math.sin(a) * rr, b: null, lv: 0, t: 0, hp: 0, max: 0, aim: a + Math.PI / 2, armed: true, hit: 0 }); }
+  const hr = rr + 78; p.hub = { p, k: n, a: a0, dx: Math.cos(a0) * hr, dy: Math.sin(a0) * hr, b: 'mod', lv: 1, t: 0, hp: 1, max: 1, aim: a0, armed: true, hit: 0, hub: true }; p.sites.push(p.hub);
+  // 指挥中心两边各一个地基下面保证有浅层矿脉
+  for (const k of [0, n - 1]) { const s = p.sites[k], d = surfaceR(p, s.a) - rnd(50, 75); p.veins.push({ x: Math.cos(s.a) * d, y: Math.sin(s.a) * d, r: rnd(20, 28), left: 36, found: false }); }
   for (const s of p.sites) { if (s.hub) continue; let best = null, bd = 200; for (const v of p.veins) { const d = Math.hypot(v.x - s.dx, v.y - s.dy); if (d < bd) { bd = d; best = v; } } s.vein = best; }
   const fa = a0 + Math.PI;
   const foeAt = (off, type) => { const a = fa + off, d = surfaceR(p, a) + 12, max = (type === 'gen' ? 120 : 70) * hpK; p.foes.push({ type, a, dx: Math.cos(a) * d, dy: Math.sin(a) * d, r: type === 'gen' ? 20 : 16, hp: max, max, t: rnd(1, 2.5), aim: a, p, flash: 0 }); };
@@ -1719,7 +1720,7 @@ function planetStep(dt) {
     tp.inOrbit = Math.hypot(P.x - tp.x, P.y + HIT_OY - tp.y) < tp.orbit;
     if (tp.inOrbit && tp.orbitT0 < 0) {
       tp.orbitT0 = survT; floatText(W / 2, SURV_Y - 150, tp.name, 20, `rgb(${tp.pal.atm})`, 2);
-      if (techHas('b4')) { const s = tp.sites[0]; s.b = 'turret'; s.lv = 1; s.hp = s.max = buildHp('turret', 1); }   // 科技「轨道补给」：自带一座炮塔
+      if (techHas('b4')) placeBuild(tp, { id: 'turret', up: false });   // 科技「轨道补给」：自带一座炮塔（放在指挥中心旁边）
     }
     if (tp.inOrbit) { survSpawnT -= dt * .4; planetEnv(tp, dt); }
     foeStep(tp, dt);
@@ -1744,7 +1745,7 @@ const DEF_WAVES = 3;
 function startDefense(p) {
   if (p.def) return;
   for (const f of p.foes) if (f.hp > 0) { f.hp = 0; explosion(p.x + f.dx, p.y + f.dy, 30); }   // 残余据点随核心一起瓦解
-  const hub = p.sites[BASE_N]; hub.hp = hub.max = Math.round(500 * (1 + .3 * p.i));
+  const hub = p.hub; hub.hp = hub.max = Math.round(500 * (1 + .3 * p.i));
   // 打掉核心后再守 DEF_AFTER 波（原来要守到第 20 波）
   p.def = { winWave: survWave.n + DEF_AFTER, t: 3 };
   floatText(W / 2, SURV_Y - 170, '核心摧毁 · 敌军开始反扑', 20, '#ffd28a', 2.6);
@@ -1752,7 +1753,7 @@ function startDefense(p) {
   sfxWarning();
 }
 function spawnDefender(p, role) {
-  const hub = p.sites[BASE_N], ha = Math.atan2(hub.dy, hub.dx), a = ha + rnd(-.9, .9), dist = Math.hypot(hub.dx, hub.dy) + rnd(560, 760);
+  const hub = p.hub, ha = Math.atan2(hub.dy, hub.dx), a = ha + rnd(-.9, .9), dist = Math.hypot(hub.dx, hub.dy) + rnd(560, 760);
   const type = role === 'raid' ? (Math.random() < .5 ? 'dart' : 'rammer') : (Math.random() < .5 ? 'fighter' : 'sniper');
   spawnEnemy(type, p.x + Math.cos(a) * dist, p.y + Math.sin(a) * dist, { vx: 0, vy: 0 });
   const e = enemies[enemies.length - 1], b = survBaseLv(); e.lvBase = b; e.elv = b + lvRoll(); const k = lvHpK(e.elv); e.hp *= k; e.maxHp *= k; e.fireT = rnd(1, 2);
@@ -1779,13 +1780,13 @@ function siegeMove(e, edt) {
   return true;
 }
 function defenseWon(p) {
-  if (p.owned) return; const hub = p.sites[BASE_N];
+  if (p.owned) return; const hub = p.hub;
   p.defHubK = hub.hp / hub.max;
   floatText(W / 2, SURV_Y - 160, '守护成功', 24, '#8ff0ff', 2);
   planetCaptured(p);
 }
 function defenseLost(p) {
-  if (p.lost) return; p.lost = true; const hub = p.sites[BASE_N], x = p.x + hub.dx, y = p.y + hub.dy;
+  if (p.lost) return; p.lost = true; const hub = p.hub, x = p.x + hub.dx, y = p.y + hub.dy;
   for (let k = 0; k < 6; k++) explosion(x + rnd(-40, 40), y + rnd(-40, 40), 40);
   flash = .5; shake = 14; player.lostPlanet = p.name; finishRun();
 }
@@ -1812,14 +1813,14 @@ const BUILDS = {
   repair: { name: '维修站', gl: 'cross', c: '110,255,160', cost: [20, 32, 50], hp: 100, desc: lv => `每 ${20 - 4 * (lv - 1)} 秒修护甲和建筑` },
   miner: { name: '采矿机', gl: 'ore', c: '255,210,90', cost: [12, 20, 32], hp: 100, desc: lv => `每 ${(6 - 1.5 * (lv - 1)).toFixed(1)} 秒产 1 矿石` },
   radar: { name: '雷达', gl: 'crosshair', c: '150,255,230', cost: [15], hp: 80, one: true, desc: () => '显示全部矿脉和核心' },
-  mod: { name: '改装台', gl: 'wrench', c: '120,220,255', cost: [10], hp: 120, one: true, desc: () => '用矿石强化战机' },
+  mod: { name: '指挥中心', gl: 'wrench', c: '120,220,255', cost: [10], hp: 120, one: true, desc: () => '守护阶段敌军的目标' },   // 只给指挥中心用（改装台 2026-11-22 删掉了）
 };
 const BUILD_IDS = Object.keys(BUILDS);
 // 2026-11-22：护盾塔、信标删掉；炮塔 / 导弹井变强变贵，开局先造采矿机最划算
 const BUILD_GROUPS = [['防御', ['turret', 'silo']], ['资源', ['miner', 'radar']], ['支援', ['repair']]];
 const BUILD_ORDER = BUILD_GROUPS.flatMap(g => g[1]);   // 空地基菜单的顺序（数字键 1–5 按这个顺序）
 const buildMax = id => BUILDS[id].cost.length;
-const buildCost = (id, lv) => { const c = BUILDS[id].cost[lv - 1]; return c === undefined ? undefined : Math.round(c * (techHas('b2') ? .8 : 1)); };   // 科技「预制建材」：造价八折
+const buildCost = (id, lv) => BUILDS[id].cost[lv - 1];   // （旧的手动建造菜单用；现在建造改成每 ORE_STEP 矿石三选一）
 const buildHp = (id, lv) => BUILDS[id].hp * (1 + .5 * (lv - 1));
 // 改装台：矿石换本局强化，可以反复买，越买越贵
 const MODS = {
@@ -1849,12 +1850,12 @@ let buildNear = null, buildBtn = null;
 function openNearBuild() { if (buildNear && state === 'play') { openBuild(buildNear.p, buildNear); return true; } return false; }
 function baseStep(p, dt) {
   const P = player, hx = P.x, hy = P.y + HIT_OY, built = p.sites.filter(s => s.b);
-  let nearB = null, nearD = 1e9;
-  buildNear = null;
+  let nearB = null;
+  buildNear = null;   // 2026-11-22：不用再飞到地基去造了，见下面「每 ORE_STEP 矿石三选一」
+  // 每攒够 ORE_STEP 矿石自动弹一次建造三选一（终结潮、基地失守后不再建造；没有可选的就先攒着）
+  if (ore >= ORE_STEP && !P.dead && !choiceQueue.includes('build') && buildChoices(p).length) { ore -= ORE_STEP; choiceQueue.push('build'); }
   for (const s of p.sites) {
     const x = p.x + s.dx, y = p.y + s.dy, d = Math.hypot(hx - x, hy - y);
-    // 靠近地基只显示一个「建造 / 升级 / 改装」按钮，点按钮或按 B 才打开菜单（不再一碰就弹出来打断战斗）
-    if (d < 60 && (!s.b || s.b === 'mod' || s.lv < buildMax(s.b)) && !P.dead && !survDoom && (!nearB || d < nearD)) { nearB = s; nearD = d; }
     if (!s.b) continue;
     if (s.hit > 0) s.hit -= dt;
     s.t -= dt;
@@ -1898,6 +1899,40 @@ function baseStep(p, dt) {
     }
     floatText(W / 2, SURV_Y - 150, BUILDS[s.b].name + ' 遭到袭击', 14, '#ff9a7a', 1.8);
   }
+}
+// 建造三选一：选项 = 建造一座（自动放到空地基上）或某类建筑全部升一级（同类建筑等级一起走，之后新造的也是这个等级）
+const BUILD_PICK = ['turret', 'silo', 'miner', 'repair', 'radar'], RAR_BUILD = 4;
+const padFree = (p, s) => !s.hub && !s.b && !p.foes.some(f => f.hp > 0 && Math.hypot(f.dx - s.dx, f.dy - s.dy) < 130);   // 敌方据点旁边的地基，据点打掉之前不能用
+function buildChoices(p) {
+  if (!p || !p.sites || !p.hub || survDoom || p.lost) return [];
+  const blv = p.blv || (p.blv = {}), free = p.sites.some(o => padFree(p, o)), out = [];
+  for (const id of BUILD_PICK) {
+    const B = BUILDS[id], n = p.sites.filter(o => o.b === id).length, lv = blv[id] || 1, max = buildMax(id);
+    if (free && !(B.one && n)) out.push({ id: 'b+' + id, name: '建造' + B.name, desc: B.desc(lv) + (B.one ? '' : `（第 ${n + 1} 座 · Lv${lv}）`), rar: RAR_BUILD, gl: B.gl, color: B.c, bd: { id, up: false } });
+    if (n && lv < max) out.push({ id: 'b^' + id, name: B.name + '全部升级', desc: B.desc(lv + 1), rar: RAR_BUILD, gl: B.gl, color: B.c, bd: { id, up: true, L: { cur: lv, max, txt: `${n} 座 Lv${lv} → ${lv + 1}` } } });
+  }
+  return out;
+}
+function rollBuild(p) { const all = buildChoices(p), out = []; while (out.length < 3 && all.length) out.push(all.splice(Math.random() * all.length | 0, 1)[0]); return out; }
+// 新建筑放在离已有建筑最远的空地基上（第一座放在指挥中心旁边），这样会慢慢铺满整颗星球
+function pickPad(p) {
+  const free = p.sites.filter(o => padFree(p, o)); if (!free.length) return null;
+  const used = p.sites.filter(o => o.b && !o.hub), ang = (a, b) => { const d = Math.abs(a - b) % TAU; return d > Math.PI ? TAU - d : d; };
+  let best = null, bd = -1;
+  for (const o of free) { const d = used.length ? Math.min(...used.map(u => ang(u.a, o.a))) : Math.PI - ang(o.a, p.baseA); if (d > bd + 1e-6) { bd = d; best = o; } }
+  return best;
+}
+function padFx(p, o) {
+  const x = p.x + o.dx, y = p.y + o.dy;
+  addPart({ t: 'ring', x, y, vx: 0, vy: 0, life: .5, max: .5, size: 120, c: BUILDS[o.b].c });
+  if (x > -40 && x < W + 40 && y > -40 && y < H + 40) floatText(x, y - 34, o.lv > 1 ? `${BUILDS[o.b].name} Lv${o.lv}` : BUILDS[o.b].name, 13, `rgb(${BUILDS[o.b].c})`, 1.4);
+}
+function placeBuild(p, bd) {
+  if (!p || !p.sites) return;
+  const blv = p.blv || (p.blv = {}), lv = blv[bd.id] || 1;
+  if (bd.up) { blv[bd.id] = lv + 1; for (const o of p.sites) if (o.b === bd.id) { const k = o.max ? o.hp / o.max : 1; o.lv = lv + 1; o.max = buildHp(bd.id, lv + 1); o.hp = o.max * k; padFx(p, o); } return; }
+  const o = pickPad(p); if (!o) return;
+  o.b = bd.id; o.lv = lv; o.hp = o.max = buildHp(bd.id, lv); o.t = 0; o.hit = 0; o.armed = true; padFx(p, o);
 }
 // 改装 / 建造菜单的点击反馈：buildFx = 刚点的那张卡（成功：闪光 + 弹起 + 火花；矿石不够：左右抖一下），buildPops = 飘出来的效果文字和花费
 let buildFx = null, buildPops = [];
@@ -2225,14 +2260,15 @@ function drawPlanets() {
     if (gensAlive(p)) { ctx.save(); ctx.setLineDash([3, 7]); ctx.lineDashOffset = -time * 30; ctx.strokeStyle = 'rgba(190,120,255,.4)'; ctx.lineWidth = 2; ctx.beginPath(); for (const f of p.foes) if (f.type === 'gen' && f.hp > 0) { ctx.moveTo(p.x + f.dx, p.y + f.dy); ctx.lineTo(p.x + p.core.dx, p.y + p.core.dy); } ctx.stroke(); ctx.restore(); }
     drawCore(p);
     for (const f of p.foes) if (f.hp > 0) drawFoe(p, f);
-    // 基地环线：沿地基那道弧画一条轨道，建好的相邻两座之间亮起来；指挥中心连到弧中间
+    // 基地环线：绕星球一圈的轨道，建好的相邻两座之间亮起来；指挥中心连到环上
     if (p.baseR) {
       const a0 = p.baseA, A = p.baseArc + .12, br = p.baseR;
       ctx.strokeStyle = 'rgba(120,200,240,.18)'; ctx.lineWidth = 10; ctx.beginPath(); ctx.arc(p.x, p.y, br, a0 - A, a0 + A); ctx.stroke();
       ctx.strokeStyle = 'rgba(140,210,240,.45)'; ctx.lineWidth = 2; ctx.setLineDash([8, 7]); ctx.beginPath(); ctx.arc(p.x, p.y, br, a0 - A, a0 + A); ctx.stroke(); ctx.setLineDash([]);
       ctx.strokeStyle = 'rgba(150,230,255,.75)'; ctx.lineWidth = 3;
-      for (let k = 0; k < BASE_N - 1; k++) { const s1 = p.sites[k], s2 = p.sites[k + 1]; if (s1.b && s2.b) { ctx.beginPath(); ctx.arc(p.x, p.y, br, s1.a, s2.a); ctx.stroke(); } }
-      const hub = p.sites[BASE_N]; ctx.strokeStyle = 'rgba(140,210,240,.5)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(p.x + Math.cos(a0) * br, p.y + Math.sin(a0) * br); ctx.lineTo(p.x + hub.dx, p.y + hub.dy); ctx.stroke();
+      const pads = p.sites.filter(o => !o.hub);
+      for (let k = 0; k < pads.length; k++) { const s1 = pads[k], s2 = pads[(k + 1) % pads.length]; if (s1.b && s2.b) { ctx.beginPath(); ctx.arc(p.x, p.y, br, s1.a, s2.a); ctx.stroke(); } }
+      const hub = p.hub; ctx.strokeStyle = 'rgba(140,210,240,.5)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(p.x + Math.cos(a0) * br, p.y + Math.sin(a0) * br); ctx.lineTo(p.x + hub.dx, p.y + hub.dy); ctx.stroke();
     }
     for (const s of p.sites) {
       const x = p.x + s.dx, y = p.y + s.dy; if (x < -140 || x > W + 140 || y < -140 || y > H + 140) continue;
@@ -2293,7 +2329,7 @@ function drawPlanetHud() {
     const hx = P.x, hy = P.y + HIT_OY, d = Math.hypot(t.x - hx, t.y - hy);
     if (t.def) {
       // 守护阶段：底部条显示指挥中心血量
-      const D = t.def, hub = t.sites[BASE_N], k = Math.max(0, hub.hp / hub.max);
+      const D = t.def, hub = t.hub, k = Math.max(0, hub.hp / hub.max);
       label = survWave.on ? `守住指挥中心 · 第 ${survWave.n}/${D.winWave} 波` : `守住指挥中心 · 下一波 ${Math.ceil(survWave.t)} 秒`;
       ctx.fillStyle = 'rgba(6,20,36,.8)'; roundRect(bx, by, bw, 8, 4); ctx.fill();
       ctx.fillStyle = k > .5 ? '#7fdcff' : k > .25 ? '#ffd27a' : '#ff6a5a'; roundRect(bx, by, Math.max(4, bw * k), 8, 4); ctx.fill();
@@ -2315,7 +2351,7 @@ function drawPlanetHud() {
   }
   ctx.fillStyle = '#ffe6b0'; ctx.strokeText(label, W / 2, by - 5); ctx.fillText(label, W / 2, by - 5);
   // 矿石数量 + 已占领星球带来的永久加成图标
-  ctx.font = `bold 11px ${FONT}`; const os = String(Math.floor(ore)), ow = ctx.measureText(os).width, bt = planetBonusTotals(), items = bt.map((v, k) => k).filter(k => bt[k]);
+  ctx.font = `bold 11px ${FONT}`; const os = survDoom ? String(Math.floor(ore)) : `${Math.floor(ore)}/${ORE_STEP}`, ow = ctx.measureText(os).width, bt = planetBonusTotals(), items = bt.map((v, k) => k).filter(k => bt[k]);
   let x = W / 2 - (18 + ow + items.length * 20) / 2;
   drawGlyph('ore', x + 6, by + 19, 12, '#ffd27a'); ctx.textAlign = 'left'; ctx.fillStyle = '#ffd27a'; ctx.strokeText(os, x + 15, by + 23); ctx.fillText(os, x + 15, by + 23); x += 18 + ow + 8;
   for (const k of items) { drawGlyph(PLANET_BONUS[k].gl, x + 6, by + 19, 12, `rgb(${PLANET_BONUS[k].c})`); x += 20; }
@@ -2590,9 +2626,8 @@ const TECH = [
   { id: 's3', br: 1, t: 2, name: '磁力核心', gl: 'magnet', cost: 140, desc: '吸附范围扩大', apply: P => { P.s.pull = (P.s.pull || 0) + SURV_PULL; } },
   { id: 's4', br: 1, t: 3, name: '战术刷新', gl: 'slashes', cost: 220, desc: '升级卡刷新次数 +2', apply: P => { P.rerolls += 2; } },
   { id: 'b1', br: 2, t: 0, name: '精炼技术', gl: 'ore', cost: 40, desc: '矿石 +25%', apply: () => { oreMul *= 1.25; } },
-  { id: 'b2', br: 2, t: 1, name: '预制建材', gl: 'wrench', cost: 80, desc: '建筑造价八折', apply: () => { } },
-  { id: 'b3', br: 2, t: 2, name: '矿脉探测', gl: 'crosshair', cost: 140, desc: '开局显示全部矿脉', apply: () => { for (const p of planets) for (const v of p.veins) v.found = true; } },
-  { id: 'b4', br: 2, t: 3, name: '轨道补给', gl: 'turret', cost: 220, desc: '进入轨道时自带一座炮塔', apply: () => { } },
+  { id: 'b3', br: 2, t: 1, name: '矿脉探测', gl: 'crosshair', cost: 140, desc: '开局显示全部矿脉', apply: () => { for (const p of planets) for (const v of p.veins) v.found = true; } },
+  { id: 'b4', br: 2, t: 2, name: '轨道补给', gl: 'turret', cost: 220, desc: '进入轨道时自带一座炮塔', apply: () => { } },
 ];
 const techHas = id => !!(save.tech && save.tech[id]);
 const techReady = d => d.t === 0 || techHas(TECH.find(o => o.br === d.br && o.t === d.t - 1).id);
@@ -2861,7 +2896,7 @@ function drawSurvBg() {
 // 机体朝向变换（绕驾驶舱旋转），绘制机体相关的东西时用
 function survShipXf() { if (SURV && player.ang) { ctx.translate(player.x, player.y + HIT_OY); ctx.rotate(player.ang); ctx.translate(-player.x, -player.y - HIT_OY); } }
 // ================= 肉鸽强化 =================
-const RAR = [{ n: '普通', c: '#7fd1ff', w: 60 }, { n: '稀有', c: '#c37bff', w: 30 }, { n: '史诗', c: '#ffb340', w: 12 }, { n: '进化', c: '#ff5a7a', w: 0 }];
+const RAR = [{ n: '普通', c: '#7fd1ff', w: 60 }, { n: '稀有', c: '#c37bff', w: 30 }, { n: '史诗', c: '#ffb340', w: 12 }, { n: '进化', c: '#ff5a7a', w: 0 }, { n: '建筑', c: '#ffd27a', w: 0 }];
 const UPGRADES = [
   { id: 'dmg', name: '火力强化', icon: '力', rar: 0, max: 8, get desc() { return SURV ? '所有攻击伤害 +30%' : '所有子弹伤害 +20%'; }, apply: s => s.dmgMul += dmgStep() },
   { id: 'rate', name: '高速装填', icon: '速', rar: 0, max: 6, desc: '射速 +12%', apply: s => s.rateMul += .12 },
@@ -2962,6 +2997,7 @@ function grantUp(id) {
 const WING_SLOTS = [[-62, 26], [62, 26], [-104, 50], [104, 50], [0, 72]], WING_SLOTS_GD = [[-46, -8], [46, -8], [-80, 14], [80, 14], [0, 46]];
 function rollChoices(minRar) {
   const P = player;
+  if (minRar === 'build') return rollBuild(planetTarget());   // 每 ORE_STEP 矿石的建造三选一
   if (minRar === 'evo') return UPGRADES.filter(u => u.evo === P.weapon && !P.branch[P.weapon]);
   const pool = UPGRADES.filter(u => u.rar < 3 && !u.id.startsWith('main_') && (P.ups[u.id] || 0) < u.max && u.rar >= minRar && (!u.cond || u.cond(P))
     && (SURV ? u.id !== 'rate' && u.id !== 'magnet' && u.id !== 'bomb' : !u.surv));
@@ -3117,7 +3153,7 @@ function openChoice() {
 }
 function pickChoice(i) {
   const u = choices[i]; if (!u) return;
-  grantUp(u.id); sfxPick();
+  if (u.bd) placeBuild(planetTarget(), u.bd); else grantUp(u.id); sfxPick();
   floatText(player.x, player.y - 60, u.name, 18, RAR[u.rar].c, 1.4);
   if (SURV && u.id === 'aspd') floatText(player.x, player.y - 38, `攻速 ${Math.round(survRateK() * player.s.rateMul * 100)}%`, 13, '#9fe8ff', 1.2);
   if (SURV && u.id === 'mspd') floatText(player.x, player.y - 38, `移速 ${Math.round(survMoveK() * 100)}%`, 13, '#9fe8ff', 1.2);
@@ -8368,6 +8404,7 @@ function render() {
 // 卡牌等级与升级前后的数值；返回 null 表示这张卡没有等级（换装、维修、奖金等）
 function cardLv(u) {
   const P = player, S = P.s, pct = v => Math.round(v * 100) + '%';
+  if (u.bd) return u.bd.L || null;   // 建造卡：升级卡显示同类建筑的等级格
   if (u.id === 'power') return { cur: P.lv, max: 5, txt: `火力 LV${P.lv} → LV${P.lv + 1}` };
   if (u.id === 'wing') return { cur: S.wingmen, max: 5, txt: `僚机 ${S.wingmen} → ${S.wingmen + 1}` };   // 格子按当前架数（会被打掉）
   if (u.noStack || u.max >= 99) return null;
@@ -8434,6 +8471,7 @@ function wrapText(txt, x, y, maxW, lh) {
 // ================= 升级卡小图标：矢量手绘，按 名字+颜色+尺寸 缓存成小画布 =================
 const GLYPH_OF = { dmg: 'sword', rate: 'ammo', aspd: 'gauge', mspd: 'boost', pull: 'pullin', armor: 'plate', od: 'battery', magnet: 'magnet', combo: 'slashes', bomb: 'bomb', heal: 'cross', cash: 'battery', spread: 'fan', pierce: 'pierce', shield: 'bubble', crit: 'crosshair', blast: 'burst', slow: 'hourglass', wing: 'squad', chain: 'zap', leech: 'heart', dodge: 'ghost', power: 'power' };
 function glyphName(u) {
+  if (u.gl) return u.gl;   // 建造卡用建筑自己的图标
   const id = u.id;
   if (GLYPH_OF[id]) return GLYPH_OF[id];
   if (id.startsWith('main_')) return 'w_' + id.slice(5);
@@ -8522,13 +8560,15 @@ function drawGlyph(name, x, y, px, col) { const c = glyphImg(name, col, px), d =
 function drawChoice() {
   ctx.fillStyle = 'rgba(0,8,22,.78)'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  const evo = choiceQueue[0] === 'evo', rare = !evo && choiceQueue[0] >= 1;
-  ctx.shadowColor = evo ? '#ff5a7a' : rare ? '#ffb340' : '#3cf'; ctx.shadowBlur = 16;
-  ctx.font = `900 30px ${FONT}`; ctx.fillStyle = evo ? '#ffb0c0' : rare ? '#ffd780' : '#e8fbff';
-  ctx.fillText(evo ? '武器进化 · 选择分支' : rare ? '首领奖励 · 选择强化' : '等级提升 · 选择强化', W / 2, evo ? 120 : 150);
+  const evo = choiceQueue[0] === 'evo', bld = choiceQueue[0] === 'build', rare = !evo && choiceQueue[0] >= 1;
+  ctx.shadowColor = evo ? '#ff5a7a' : rare || bld ? '#ffb340' : '#3cf'; ctx.shadowBlur = 16;
+  ctx.font = `900 30px ${FONT}`; ctx.fillStyle = evo ? '#ffb0c0' : rare || bld ? '#ffd780' : '#e8fbff';
+  ctx.fillText(evo ? '武器进化 · 选择分支' : bld ? `矿石 ${ORE_STEP} · 选择建造` : rare ? '首领奖励 · 选择强化' : '等级提升 · 选择强化', W / 2, evo ? 120 : 150);
   ctx.shadowBlur = 0;
   ctx.font = `14px ${FONT}`; ctx.fillStyle = '#9fe2ff';
-  ctx.fillText(evo ? `${WEAPONS[player.weapon].name} 已达 LV3，进化方向不可更改` : `机师等级 Lv.${player.plevel}` + (SURV ? `   装备栏 ${upKinds(player)}/${UP_KINDS}` : '') + (choiceQueue.length > 1 ? `   (待选 ${choiceQueue.length})` : ''), W / 2, evo ? 152 : 182);
+  const tp = bld ? planetTarget() : null;
+  if (bld) ctx.fillText(tp ? `建筑 ${tp.sites.filter(o => o.b && !o.hub).length} / ${tp.sites.length - 1} 座 · 同类建筑一起升级` : '', W / 2, 184);
+  else ctx.fillText(evo ? `${WEAPONS[player.weapon].name} 已达 LV3，进化方向不可更改` : `机师等级 Lv.${player.plevel}` + (SURV ? `   装备栏 ${upKinds(player)}/${UP_KINDS}` : '') + (choiceQueue.length > 1 ? `   (待选 ${choiceQueue.length})` : ''), W / 2, evo ? 152 : 182);
   cardRects = [];
   const n = choices.length, top = evo ? 176 : 210, gap = n > 3 ? 112 : 124, ch = n > 3 ? 102 : 112;
   choices.forEach((u, i) => {
