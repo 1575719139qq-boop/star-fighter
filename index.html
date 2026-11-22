@@ -5316,7 +5316,7 @@ const POOLS = {
 const PITY = 50, PULL_COST = 100, TEN_COST = 900, STAGE_REWARD = 100;   // 2026-11-21 星晶产出整体下调约 35%
 const IN_RUN = { play: 1, paused: 1, choose: 1, chest: 1, over: 1 };
 const SAVE_KEY = 'starFighterSave';
-function freshSave() { return { crystals: 500, fighters: { silver: 1 }, gear: { 'w:vulcan': 1 }, load: { fighter: 'silver', main: 'w:vulcan', wing: null }, pity: { f: 0, e: 0 }, mat: [0, 0, 0], bp: {} }; }   // 新玩家只送 500 星晶（2026-11-22）
+function freshSave() { return { crystals: 0, freeTen: 1, fighters: { silver: 1 }, gear: { 'w:vulcan': 1 }, load: { fighter: 'silver', main: 'w:vulcan', wing: null }, pity: { f: 0, e: 0 }, mat: [0, 0, 0], bp: {} }; }   // 新玩家：0 星晶 + 一张免费十连券（2026-11-22）
 let save = (() => { try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && s.fighters && s.gear && s.load && s.pity) return s; } catch (e) { } return freshSave(); })();
 function persist() { if (demoSilent) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { } }
 curSkin = save.fighters[save.load.fighter] ? save.load.fighter : 'silver';
@@ -5366,7 +5366,7 @@ const RECIPE = { f: [75, 24, 4], e: [38, 12, 2] };   // 合成一架战机 / 一
 const MAT_NORM = .003, MAT_ELITE = .5, MAT_CHAMP = .008;   // 小怪掉合金；精英 / 冠军掉能量核；首领必掉 1 个星核（一局约 1.7 万小怪、900 冠军、17 精英、1–2 首领）
 const bpKey = it => it.kind === 'f' ? 'f:' + it.id : it.id;
 function drawMatIcon(m, x, y, s) { const im = TITLE_IMG['imat' + m]; if (im) ctx.drawImage(im, x - s / 2, y - s / 2, s, s); else { ctx.fillStyle = `rgb(${MATS[m].c})`; ctx.beginPath(); ctx.arc(x, y, s * .35, 0, TAU); ctx.fill(); } }
-function dropMat(x, y, m) { if (DEMO || !SURV) return; pickups.push({ x, y, k: 'Q', m, v: 1, t: 0, vy: 0, pull: m === 2 }); }   // 星核掉下来直接飞向玩家
+function dropMat(x, y, m) { if (DEMO || !SURV) return; pickups.push({ x, y, k: 'Q', m, v: 1, t: 0, vy: 0, pull: m === 2 || !!survDoom }); }   // 星核、终结潮里掉的材料：掉下来直接飞向玩家
 function drawMatPickup(p) { const bob = Math.sin(p.t * 4) * 2, s = p.m === 2 ? 34 : 26; ctx.globalCompositeOperation = 'lighter'; drawGlow(p.x, p.y + bob, s * 2.2, MATS[p.m].c, .55); ctx.globalCompositeOperation = 'source-over'; drawMatIcon(p.m, p.x, p.y + bob, s); }
 // 一排材料（图标 + 数字）：o.plus 显示 +n；o.need 显示 有/要，不够的标红；o.left 给了就从左边排起，否则居中
 function drawMatRow(cx, y, vals, o = {}) {
@@ -5381,9 +5381,9 @@ function drawMatRow(cx, y, vals, o = {}) {
 // ---------- 抽卡 ----------
 let gachaPool = 'f', gachaRes = null, gachaT = 0, gachaMsg = '', gachaMsgT = 0, gachaMsgOk = false, hangarPick = null, uiRects = [], craftPage = 0, craftFxT = -9;
 function doPull(pool, n) {
-  const cost = n === 10 ? TEN_COST : PULL_COST * n;
-  if (save.crystals < cost) { gachaMsg = '星晶不足 · 去关卡里赚吧'; gachaMsgOk = false; gachaMsgT = 1.8; tone(180, .2, 'square', .05); return; }
-  save.crystals -= cost;
+  const cost = n === 10 ? TEN_COST : PULL_COST * n, free = n === 10 && (save.freeTen || 0) > 0;   // 免费十连券（新玩家送一张）
+  if (!free && save.crystals < cost) { gachaMsg = '星晶不足 · 去关卡里赚吧'; gachaMsgOk = false; gachaMsgT = 1.8; tone(180, .2, 'square', .05); return; }
+  if (free) save.freeTen--; else save.crystals -= cost;
   const PL = POOLS[pool], all = PL.items(), out = [];
   for (let i = 0; i < n; i++) {
     let g;
@@ -5944,11 +5944,12 @@ function drawGacha() {
     ctx.fillText('设计图 + 材料 → 合成 · 已有的再抽到 → 升星（最高 5★）', W / 2, 486);
   }
   for (const [i, n, c] of [[0, 1, PULL_COST], [1, 10, TEN_COST]]) {
-    const x = 18 + i * 190, y = 504, ok = save.crystals >= c;
+    const x = 18 + i * 190, y = 504, free = n === 10 && (save.freeTen || 0) > 0, ok = free || save.crystals >= c;
     uiBtn(x, y, 179, 58, '', n === 1 ? 'one' : 'ten', i ? { tint: 'gold', off: !ok, fill: ok ? 'rgba(150,90,20,.85)' : 'rgba(50,40,30,.7)', stroke: ok ? '#ffd780' : 'rgba(200,170,120,.4)' } : { off: !ok, fill: ok ? 'rgba(30,100,160,.85)' : 'rgba(30,40,50,.7)' });
     if (!ok) ctx.globalAlpha = .55;   // 星晶不够：和按钮一起变暗
     titleText(n === 1 ? '单 抽' : '十 连', x + 72, y + 30, 21, ok ? '#fff' : 'rgba(225,232,240,.85)', ok ? `rgba(${i ? '255,210,120' : '110,210,255'},.85)` : null);
-    gem(x + 116, y + 29, 7); ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = ok ? '#e8fbff' : 'rgba(225,232,240,.85)'; ctx.fillText(String(c), x + 126, y + 30); ctx.textAlign = 'center';
+    if (free) { ctx.font = `bold 15px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = '#ffe9a0'; ctx.fillText('免费', x + 112, y + 30); ctx.textAlign = 'center'; }
+    else { gem(x + 116, y + 29, 7); ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = ok ? '#e8fbff' : 'rgba(225,232,240,.85)'; ctx.fillText(String(c), x + 126, y + 30); ctx.textAlign = 'center'; }
     ctx.globalAlpha = 1;
   }
   ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(190,230,255,.6)'; ctx.fillText(`星晶来源：${STAGE_MODE_ON ? '每过一关' : '击破首领'} +${STAGE_REWARD} · 占领星球 · 终结潮每秒 +${DOOM_CR}`, W / 2, 582);
