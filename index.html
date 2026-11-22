@@ -1067,7 +1067,7 @@ function defaultStats() {
 function startGame(demoRun) {
   if (!demoRun) initAudio();
   DEMO = false; ultCut = null; ultFx = []; odAllow = 0;
-  SURV = false; survFx = []; PLANET = false; planets = []; capRes = null;
+  SURV = false; survFx = []; PLANET = false; planets = []; capRes = null; survDoom = null;
   stage = 1; score = 0; dispScore = 0;
   player = { x: W / 2, y: H - 120, tx: W / 2, ty: H - 120, useTarget: false, armor: MAX_ARMOR, maxArmor: MAX_ARMOR, lv: 1, bombs: 3, inv: 2, fireT: 0, misT: 0, bank: 0, dead: false, deadT: 0,
     s: defaultStats(), ups: {}, syn: {}, wing: [], kills: 0, xp: 0, xpNext: 12, plevel: 1, rerolls: 1,
@@ -1095,7 +1095,7 @@ try { survBest = +localStorage.getItem('starFighterSurvBest') || 0; } catch (e) 
 const SURV_Y = 420, SURV_SPEED = 250, SURV_ENEMY_SPEED = .7;
 // 成长节奏：经验倍率；攻速开局 35%，只有选"攻速提升"卡才会变快（每级 +15%，最多 6 级，满级 125%）
 // 生存模式：打得慢但每发更痛 —— 攻速开局 25%（每张攻速卡 +12%），伤害基础 ×2.5，"火力强化"卡每级 +30%（相对基础）
-const SURV_XP = .9, SURV_RATE0 = .15, SURV_ASPD = .12, SURV_ASPD_WEIGHT = 1.8, SURV_DMG = 3.5, SURV_DMG_STEP = .3;
+const SURV_XP = 1.035, SURV_RATE0 = .15, SURV_ASPD = .12, SURV_ASPD_WEIGHT = 1.8, SURV_DMG = 3.5, SURV_DMG_STEP = .3;
 // 生存模式首领：第一只在 2:30 出现，之后每击破一只，3 分钟后来下一只；按顺序轮换 5 关的首领，每只比上一只血厚 80%
 const SURV_BOSSES = ['dread', 'driller', 'queen', 'judge', 'eye'], SURV_BOSS_FIRST = 150, SURV_BOSS_GAP = 180;
 let survBossN = 0, survNextBoss = SURV_BOSS_FIRST, survBossWarn = 0, survBossPos = null;
@@ -1124,14 +1124,14 @@ const SURV_MOVE = {
 const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 function startSurvival() {
   startGame();
-  SURV = true; survFx = []; survT = 0; survBombCD = 0; survWave = { n: 1, on: true, t: SURV_WAVE_ON(1) }; survSpawnT = .6; survEliteT = 40; survRockT = 6; survBgX = survBgY = 0; survBossN = 0; survNextBoss = SURV_BOSS_FIRST; survBossWarn = 0;
+  SURV = true; survFx = []; survT = 0; survBombCD = 0; survDoom = null; survWave = { n: 1, on: true, t: SURV_WAVE_ON(1) }; survSpawnT = .6; survEliteT = 40; survRockT = 6; survBgX = survBgY = 0; survBossN = 0; survNextBoss = SURV_BOSS_FIRST; survBossWarn = 0;
   player.x = player.tx = W / 2; player.y = player.ty = SURV_Y; player.ang = 0; player.joy = null;
   player.s.dmgMul *= SURV_DMG;
   setPhase('surv');
   // 星球：前方远处有一颗，飞进轨道圈读条占领，占领后可以建基地
   // 每局只有一颗目标星球；占领后结算，之前的战机留下守护，已占领的星球给之后每局永久加成
   PLANET = true; planets = []; planetN = save.planets.length; planetOwned = save.planets.length; planetNextT = 0; ore = 0; oreGot = 0; oreMul = 1; modN = {}; buildCtx = null; capRes = null;
-  const tg0 = smTarget(); runTier = tg0 && tg0.tier || 0; runHpK = tg0 ? 1 + .3 * (SECTORS[tg0.sec].diff + runTier) : 1;   // 每高一档难度相当于再深一个星区（敌人 +2 级）
+  const tg0 = smTarget(); survBossBase = tg0 ? tg0.sec : 0; runTier = tg0 && tg0.tier || 0; runHpK = tg0 ? 1 + .3 * (SECTORS[tg0.sec].diff + runTier) : 1;   // 每高一档难度相当于再深一个星区（敌人 +2 级）
   planetBonusApply(player);
   addPlanet(-Math.PI / 2);
   techApply(player);
@@ -1143,6 +1143,7 @@ function startSurvival() {
 function restartRun() { if (SURV) startSurvival(); else startGame(); }
 // 一局结束（阵亡 / 主动结束 / 占领星球）：结算星晶和纪录
 function finishRun() {
+  if (capRes && survDoom) capRes.doomT = survDoom.t;   // 终结潮里撑了多久
   state = 'over'; phaseT = 0; drag = null; rewardRun();
   if (SURV && PLANET) planetHarvest();
   if (SURV && survT > survBest) { survBest = survT; try { localStorage.setItem('starFighterSurvBest', survBest); } catch (e) { } }
@@ -1244,9 +1245,10 @@ function survFrame(fn) {
   if (P.rail && P.rail !== rail) { R(P.rail, 'x', 'y0', sn); P.rail.ang = a; }
 }
 // 刷怪：从屏幕外一圈涌来；时间越长种类越多、越密、越硬，定时刷精英；偶尔有陨石横穿
-// 生存模式一共 20 波：每波刷 17–26 秒（越往后越长），然后停 6 秒喘口气。
-// 通关条件：打掉星球核心（占领），然后守住指挥中心直到第 20 波结束；没占领就过了 20 波会进入加时，直到占领后再守 3 波
-const SURV_WAVES = 20, SURV_WAVE_ON = n => Math.min(26, 16 + n), SURV_WAVE_OFF = 6;
+// 生存模式的一局（2026-11-22 改短）：每波刷 17–26 秒（越往后越长），然后停 6 秒喘口气；波数不设上限。
+// 打掉星球核心后守住指挥中心 DEF_AFTER 波 → 占领成功（存档、发奖励）→ 终结潮：敌人成倍涌来、越来越强，直到把你淹没，这一局结束。
+// 一直没打掉核心的局，撑过第 SURV_WAVES 波也会来终结潮（免得一局无限拖下去）
+const SURV_WAVES = 20, SURV_WAVE_ON = n => Math.min(26, 16 + n), SURV_WAVE_OFF = 6, DEF_AFTER = 8;
 // 等级保底：每撑过一波，机师等级至少补到"下一波的波数"（第 9 波开始时至少 9 级）。
 // 只补掉队的：晶体捡得少、或者忙着打据点没空刷怪时不会越打越弱；等级本来就够的局不受影响
 function survLevelFloor(lv) {
@@ -1254,35 +1256,50 @@ function survLevelFloor(lv) {
   while (!P.dead && P.plevel < lv && n < 20) { P.xp = P.xpNext; gainXP(0); n++; }
   return n;
 }
-let survWave = { n: 1, on: true, t: SURV_WAVE_ON(1) };
-const survWaveGoal = () => { const t = planetTarget(); return t && t.def ? t.def.winWave : SURV_WAVES; };
+let survWave = { n: 1, on: true, t: SURV_WAVE_ON(1) }, survDoom = null, survBossBase = 0;
+const survWaveGoal = () => { const t = planetTarget(); return t && t.def ? t.def.winWave : 0; };   // 只有守卫阶段才有"守到第几波"
 function survWaveStep(dt) {
   const w = survWave;
+  if (survDoom) return;   // 终结潮：不再分波，一直刷
   if ((w.t -= dt) > 0) return;
   if (w.on) {
     const t = planetTarget();
     if (t && t.def && w.n >= t.def.winWave) { defenseWon(t); return; }   // 守住了，通关
     const up = survLevelFloor(w.n + 1);
     w.on = false; w.t = SURV_WAVE_OFF; floatText(W / 2, 96, up ? `第 ${w.n} 波结束 · 等级 +${up}` : `第 ${w.n} 波结束`, 16, '#9fe8ff', 1.6); tone(523, .15, 'triangle', .05); tone(784, .2, 'triangle', .05, 0, .12);
-    if (w.n >= SURV_WAVES && !(t && t.def)) floatText(W / 2, 118, '加时 · 尽快打掉星球核心', 14, '#ff9a7a', 2.2);
+    if (w.n >= SURV_WAVES && !(t && t.def)) { startDoom(false); return; }   // 一直没打掉核心：撑过第 20 波也来终结潮
   }
   else { w.n++; w.on = true; w.t = SURV_WAVE_ON(w.n); floatText(W / 2, 96, `第 ${w.n} 波`, 20, '#ffd28a', 1.8); tone(330, .2, 'sawtooth', .04); tone(440, .25, 'sawtooth', .04, 0, .15); }
 }
+// 终结潮：一来敌人就 +DOOM_LV 级，之后每 DOOM_LV_T 秒再 +1 级；刷得是平时的 3 倍多、每 3 秒一只精英，场上上限放宽到 220。
+// 血量还按时间指数上涨（每秒 ×DOOM_HP，约 16 秒翻一倍），敌人越追越快（一来 1.3 倍，最多 2.2 倍）、远程占一半、刷得更近；期间不出首领（首领死时会清场），不再升级（不弹选卡）——再强的配置也撑不了太久；
+// 「生存最久」记的就是撑到最后的总时间
+const DOOM_LV = 4, DOOM_LV_T = 4, DOOM_HP = 1.045;
+function startDoom(captured) {
+  if (survDoom) return;
+  survDoom = { t: 0, captured }; survWave.on = true; survEliteT = 2;
+  // 基地被冲垮：这一局里建的炮塔、护盾塔、维修站等全部炸掉（星球已经存进存档，不受影响），终结潮期间也不能再建——蹲在基地里挡不住
+  for (const p of planets) for (const s of p.sites || []) if (s.b && !s.hub) { explosion(p.x + s.dx, p.y + s.dy, 30); s.b = null; s.lv = 0; s.hp = s.max = 0; }
+  floatText(W / 2, SURV_Y - 178, '终结潮来袭', 26, '#ff7a6a', 3);
+  floatText(W / 2, SURV_Y - 148, captured ? '星球已占领 · 撑得越久越好' : '撑得越久越好', 14, '#ffd0c0', 3);
+  sfxWarning(); shake = Math.max(shake, 8);
+}
 function survUpdate(dt) {
   survT += dt;
+  if (survDoom) survDoom.t += dt;
   survWaveStep(dt);
   const live = SURV_TIERS.filter(t => survT >= t[0]), melee = live.flatMap(t => t[1]), ranged = live.flatMap(t => t[2]);
-  const tier = ranged.length && Math.random() < SURV_RANGED_SHARE ? ranged : melee;
+  const tier = ranged.length && Math.random() < (survDoom ? .5 : SURV_RANGED_SHARE) ? ranged : melee;   // 终结潮：远程占一半
   // 密度：开局每秒约 3 只，之后越刷越快、每群越大（场上最多 140 只）；波次间隙不刷，刷怪期间密一点补回来
-  if (survWave.on && (survSpawnT -= dt) <= 0 && enemies.length < 140) {
+  if ((survWave.on || survDoom) && (survSpawnT -= dt) <= 0 && enemies.length < (survDoom ? 220 : 140)) {
     // 占领星球之前怪少一些（间隔拉长 1.6 倍），打掉核心后恢复正常并开始反扑
     const tgt = planetTarget(), pre = PLANET && tgt && !tgt.def;
-    survSpawnT = Math.max(.22, 1 - survT / 150) * .82 * (boss ? 2.5 : 1) * (pre ? 1.6 : 1);   // 首领战期间小怪少一些
-    const n = Math.min(12, 3 + Math.floor(survT / 35) + (Math.random() < .3 ? 1 : 0)), type = tier[Math.random() * tier.length | 0], a0 = rnd(0, TAU);
+    survSpawnT = Math.max(.22, 1 - survT / 150) * .82 * (boss ? 2.5 : 1) * (pre ? 1.6 : 1) * (survDoom ? .3 : 1);   // 首领战期间小怪少一些；终结潮刷得快 3 倍多
+    const n = Math.min(survDoom ? 18 : 12, 3 + Math.floor(survT / 35) + (Math.random() < .3 ? 1 : 0) + (survDoom ? 4 : 0)), type = tier[Math.random() * tier.length | 0], a0 = rnd(0, TAU);
     const cnt = type === 'shieldbot' ? 1 : SURV_MELEE.has(type) ? n : Math.ceil(n / 3);
     for (let i = 0; i < cnt; i++) survSpawn(type, a0 + rnd(-.35, .35));
   }
-  if (!boss && survWave.on && (survEliteT -= dt) <= 0) { survEliteT = Math.max(20, 40 - survT / 20); survSpawn(SURV_ELITES[Math.random() * SURV_ELITES.length | 0], rnd(0, TAU), true); }
+  if ((survDoom || !boss && survWave.on) && (survEliteT -= dt) <= 0) { survEliteT = survDoom ? 3 : Math.max(20, 40 - survT / 20); survSpawn(SURV_ELITES[Math.random() * SURV_ELITES.length | 0], rnd(0, TAU), true); }
   if ((survRockT -= dt) <= 0) {
     survRockT = rnd(4, 8);
     const a = rnd(0, TAU), b = a + Math.PI + rnd(-.4, .4), sp = rnd(70, 120);
@@ -1321,11 +1338,12 @@ function survBossUpdate(dt) {
 }
 // 首领：到点先报警 3 秒（红光闪烁 + 警报），再从屏幕上方入场，之后追着玩家跑
 function survBossTick(dt) {
+  if (survDoom) return;   // 终结潮期间不出首领
   if (boss || survT < survNextBoss) return;
   if (survBossWarn <= 0) { survBossWarn = 3; sfxWarning(); floatText(W / 2, SURV_Y - 150, '⚠ 首领来袭 ⚠', 26, '#ff5a5a', 3); }
   survBossWarn -= dt; redFlash = Math.max(redFlash, .25 + .2 * Math.sin(survT * 12));
   if (survBossWarn > 0) return;
-  boss = makeBossOf(SURV_BOSSES[survBossN % SURV_BOSSES.length]);
+  boss = makeBossOf(SURV_BOSSES[(survBossBase + survBossN) % SURV_BOSSES.length]);   // 按星区换首领：第几个星区就从第几个首领打起，之后轮下去
   const k = 1 + survBossN * .8; boss.hp = boss.maxHp = boss.maxHp * k; for (const t of boss.turrets) { t.hp *= k; t.max *= k; }
   survBossWarn = 0;
 }
@@ -1721,14 +1739,14 @@ function planetStep(dt) {
   pBullets = pBullets.filter(b => !b.dead); eBullets = eBullets.filter(b => !b.dead);
   if (planets.some(p => p.gone)) planets = planets.filter(p => !p.gone);   // 挖碎的彗星
 }
-// ================= 守护：核心被摧毁后，敌军分 3 波反扑，冲向我方指挥中心；守住才算占领成功 =================
+// ================= 守护：核心被摧毁后敌军反扑，冲向我方指挥中心；守住 DEF_AFTER 波才算占领成功，之后来终结潮 =================
 const DEF_WAVES = 3;
 function startDefense(p) {
   if (p.def) return;
   for (const f of p.foes) if (f.hp > 0) { f.hp = 0; explosion(p.x + f.dx, p.y + f.dy, 30); }   // 残余据点随核心一起瓦解
   const hub = p.sites[BASE_N]; hub.hp = hub.max = Math.round(500 * (1 + .3 * p.i));
-  // 守到第 20 波结束才通关；如果第 18 波以后才打掉核心，至少还要再守 3 波
-  p.def = { winWave: Math.max(SURV_WAVES, survWave.n + 3), t: 3 };
+  // 打掉核心后再守 DEF_AFTER 波（原来要守到第 20 波）
+  p.def = { winWave: survWave.n + DEF_AFTER, t: 3 };
   floatText(W / 2, SURV_Y - 170, '核心摧毁 · 敌军开始反扑', 20, '#ffd28a', 2.6);
   floatText(W / 2, SURV_Y - 140, `守住指挥中心到第 ${p.def.winWave} 波`, 15, '#bff4ff', 2.6);
   sfxWarning();
@@ -1771,7 +1789,7 @@ function defenseLost(p) {
   for (let k = 0; k < 6; k++) explosion(x + rnd(-40, 40), y + rnd(-40, 40), 40);
   flash = .5; shake = 14; player.lostPlanet = p.name; finishRun();
 }
-// 占领完成（守住了反扑）：记进存档，按三颗星发星晶，进入结算画面；这一局到此结束
+// 占领完成（守住了反扑）：记进存档，按三颗星发星晶；接着来终结潮，被淹没后进结算画面（capRes）
 function planetCaptured(p) {
   if (p.owned) return;
   p.owned = true; p.inOrbit = false; planetOwned++;
@@ -1785,7 +1803,7 @@ function planetCaptured(p) {
   save.target = null;
   const unlock = sectorsDone() > done0 && SECTORS[sectorsDone()] ? SECTORS[sectorsDone()].name : ''; save.crystals += bonus; P.earned = (P.earned || 0) + bonus;
   capRes = { p, took, kills: P.kills - p.k0, ore: Math.floor(oreGot - p.ore0), stars, got, fighter: SKINS[curSkin].name, unlock, tier: runTier, tierUp };
-  finishRun();
+  startDoom(true);
 }
 // ================= 基地：地表一圈 8 个地基，飞上去建造；建筑有血量，会被敌人攻击 =================
 const BUILDS = {
@@ -1837,7 +1855,7 @@ function baseStep(p, dt) {
   for (const s of p.sites) {
     const x = p.x + s.dx, y = p.y + s.dy, d = Math.hypot(hx - x, hy - y);
     // 靠近地基只显示一个「建造 / 升级 / 改装」按钮，点按钮或按 B 才打开菜单（不再一碰就弹出来打断战斗）
-    if (d < 60 && (!s.b || s.b === 'mod' || s.lv < buildMax(s.b)) && !P.dead && (!nearB || d < nearD)) { nearB = s; nearD = d; }
+    if (d < 60 && (!s.b || s.b === 'mod' || s.lv < buildMax(s.b)) && !P.dead && !survDoom && (!nearB || d < nearD)) { nearB = s; nearD = d; }
     if (!s.b) continue;
     if (s.hit > 0) s.hit -= dt;
     s.t -= dt;
@@ -2636,7 +2654,7 @@ function techAct(a) {
 }
 // 敌人等级：每级血量 +17%，经验约按血量成长
 const lvHpK = lv => 1 + (lv - 1) * .17;
-const survBaseLv = () => 1 + Math.floor(survT / 30) + 2 * Math.round((runHpK - 1) / .3);
+const survBaseLv = () => 1 + Math.floor(survT / 30) + 2 * Math.round((runHpK - 1) / .3) + (survDoom ? DOOM_LV + Math.floor(survDoom.t / DOOM_LV_T) : 0);
 function lvRoll() { const r = Math.random(); return r < .65 ? 0 : r < .9 ? 1 + (Math.random() * 2 | 0) : 3 + (Math.random() * 3 | 0); }
 // 比同时期普通敌人高的个体，头上显示等级：高 1–2 级蓝色，高 3 级以上紫色，精英个体金色
 function drawEnemyLevels() {
@@ -2650,7 +2668,7 @@ function drawEnemyLevels() {
   ctx.restore();
 }
 function survSpawn(type, a, elite) {
-  const R = DEMO ? 250 + rnd(0, 60) : 470 + rnd(0, 60);   // 主界面演示镜头拉近了，敌人在画面边缘外一点刷出来，才看得到它们冲进来被打爆
+  const R = DEMO ? 250 + rnd(0, 60) : survDoom ? 380 + rnd(0, 40) : 470 + rnd(0, 60);   // 终结潮刷得更近   // 主界面演示镜头拉近了，敌人在画面边缘外一点刷出来，才看得到它们冲进来被打爆
   if (PLANET) for (let i = 0; i < 8 && planetSolidAt(player.x + Math.cos(a) * R, player.y + Math.sin(a) * R); i++) a += .8;   // 不在岩层里刷怪
   spawnEnemy(type, player.x + Math.cos(a) * R, player.y + Math.sin(a) * R, { vx: 0, vy: 0 });
   // 敌人等级：基础等级随存活时间上涨（每 30 秒 +1，越靠后的星区起点越高），个体再随机高 0–5 级；
@@ -2658,7 +2676,7 @@ function survSpawn(type, a, elite) {
   const e = enemies[enemies.length - 1], base = survBaseLv();
   e.champ = !elite && survT > 60 && Math.random() < SURV_CHAMP;
   e.lvBase = base; e.elv = base + lvRoll() + (elite ? 2 : 0) + (e.champ ? 3 : 0);
-  const k = lvHpK(e.elv) * (elite ? 1.2 : 1) * (e.champ ? 2 : 1);
+  const k = lvHpK(e.elv) * (elite ? 1.2 : 1) * (e.champ ? 2 : 1) * (survDoom ? Math.pow(DOOM_HP, survDoom.t) : 1);   // 终结潮：血量按时间指数上涨
   e.hp *= k; e.maxHp *= k; e.fireT = rnd(1.2, 2.6);
   if (e.champ) e.r *= 1.35;
   if (!BUG_ART.defs[type] && survT > 60) e.pal = [null, 'rust', 'navy', 'void'][Math.floor(survT / 60) % 4];
@@ -2690,7 +2708,7 @@ function survEnemyMove(e, edt) {
   const act = SURV_ACT[e.type];
   if (act && act(e, d, dx, dy, edt)) { e.vx *= .85; e.vy *= .85; fly(); e.fx = dx; e.fy = dy; return; }
   const m = SURV_MOVE[e.type] || [70, 0];
-  let sp = m[0] * SURV_ENEMY_SPEED * (e.champ ? 1.15 : 1) * (e.lockT > 0 ? .15 : 1);
+  let sp = m[0] * SURV_ENEMY_SPEED * (e.champ ? 1.15 : 1) * (e.lockT > 0 ? .15 : 1) * (survDoom ? Math.min(2.2, 1.3 + survDoom.t / 100) : 1);   // 终结潮：敌人越追越快
   if (e.type === 'burster' && d < 150) sp *= 1.9;
   let vx = tx * sp, vy = ty * sp;
   if (m[1] && d < m[1]) { const s = e.ph > Math.PI ? 1 : -1, back = (m[1] - d) / m[1]; vx = (-ty * s * .85 - tx * back) * sp; vy = (tx * s * .85 - ty * back) * sp; }
@@ -3127,6 +3145,7 @@ function reroll() {
 }
 function gainXP(n) {
   const P = player;
+  if (survDoom) return;   // 终结潮期间不再升级
   P.xp += n * P.s.xpMul * (SURV ? SURV_XP : 1);
   while (P.xp >= P.xpNext) {
     // 生存模式的升级所需经验涨得慢一些（每级约 +22%），保证中后期也有卡可选
@@ -4531,7 +4550,7 @@ const demoKey = () => [curSkin, save.load.main, save.load.wing].join('|');
 function startDemo() {
   startGame(true);
   DEMO = true;
-  SURV = true; survFx = []; survT = 100; survBombCD = 0; survWave = { n: 4, on: true, t: 1e9 }; survSpawnT = .3; survEliteT = 1e9; survRockT = 4; survBgX = survBgY = 0; survBossN = 0; survNextBoss = 1e9; survBossWarn = 0;
+  SURV = true; survFx = []; survT = 100; survBombCD = 0; survDoom = null; survWave = { n: 4, on: true, t: 1e9 }; survSpawnT = .3; survEliteT = 1e9; survRockT = 4; survBgX = survBgY = 0; survBossN = 0; survNextBoss = 1e9; survBossWarn = 0;
   const P = player; P.x = P.tx = W / 2; P.y = P.ty = SURV_Y; P.ang = 0; P.joy = null; P.inv = 0;
   P.s.dmgMul *= SURV_DMG * 1.7; P.s.aspd = .7; P.lv = P.lastLv = 5;
   const bs = BRANCHES[P.weapon]; if (bs) { P.branch[P.weapon] = bs[Math.random() * bs.length | 0].id; P.evoAsked[P.weapon] = true; }
@@ -8324,18 +8343,27 @@ function cardLv(u) {
   if (T[u.id]) L.txt = T[u.id]();
   return L;
 }
-// 生存模式：屏幕上方显示本局已拥有的强化卡和等级（满级显示 MAX）
+// 生存模式：屏幕上方的装备栏——UP_KINDS（8）个格子，放本局拿到的强化卡（满级显示 MAX），空格也画出来，上限一眼看得到；
+// 僚机支援不占格子（和原来的副武器卡一样），单独排在装备栏后面；组合技也排在后面
 function drawOwnedCards() {
-  const P = player, list = UPGRADES.filter(u => (P.ups[u.id] || 0) > 0 && !u.noStack && u.max < 99);
+  const P = player, list = UPGRADES.filter(u => (P.ups[u.id] || 0) > 0 && !u.noStack && u.max < 99 && u.id !== 'wing');
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   let x = 8, y = 82;
-  for (const u of list) {
-    if (x > W - 60) { x = 8; y += 32; }
+  for (let i = 0; i < UP_KINDS; i++) {
+    const u = list[i];
+    if (!u) { ctx.fillStyle = 'rgba(8,20,38,.42)'; roundRect(x, y, 26, 28, 5); ctx.fill(); ctx.strokeStyle = 'rgba(120,170,210,.28)'; ctx.lineWidth = 1; ctx.stroke(); x += 29; continue; }
     const rc = RAR[u.rar].c, lv = P.ups[u.id], full = lv >= u.max;
     ctx.fillStyle = 'rgba(8,20,38,.82)'; roundRect(x, y, 26, 28, 5); ctx.fill();
     ctx.strokeStyle = full ? '#ffd23f' : rc; ctx.lineWidth = 1.2; ctx.stroke();
     drawGlyph(glyphName(u), x + 13, y + 10, 13, u.color ? `rgb(${u.color})` : rc);
     ctx.font = `bold 8px ${FONT}`; ctx.fillStyle = full ? '#ffd23f' : '#e8fbff'; ctx.fillText(full ? 'MAX' : 'Lv' + lv, x + 13, y + 22);
+    x += 29;
+  }
+  x += 6;
+  if (P.s.wingmen > 0) {   // 僚机数量（不占装备栏）
+    const wc = WINGS[P.wingType || 'gun'].c;
+    ctx.fillStyle = 'rgba(8,24,40,.82)'; roundRect(x, y, 26, 28, 5); ctx.fill(); ctx.strokeStyle = `rgba(${wc},.8)`; ctx.lineWidth = 1.2; ctx.stroke();
+    drawGlyph('squad', x + 13, y + 10, 13, `rgb(${wc})`); ctx.font = `bold 8px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('×' + P.s.wingmen, x + 13, y + 22);
     x += 29;
   }
   for (const sy of SYNERGY) {
@@ -8451,7 +8479,7 @@ function drawChoice() {
   ctx.fillText(evo ? '武器进化 · 选择分支' : rare ? '首领奖励 · 选择强化' : '等级提升 · 选择强化', W / 2, evo ? 120 : 150);
   ctx.shadowBlur = 0;
   ctx.font = `14px ${FONT}`; ctx.fillStyle = '#9fe2ff';
-  ctx.fillText(evo ? `${WEAPONS[player.weapon].name} 已达 LV3，进化方向不可更改` : `机师等级 Lv.${player.plevel}` + (SURV ? `   强化 ${upKinds(player)}/${UP_KINDS} 种` : '') + (choiceQueue.length > 1 ? `   (待选 ${choiceQueue.length})` : ''), W / 2, evo ? 152 : 182);
+  ctx.fillText(evo ? `${WEAPONS[player.weapon].name} 已达 LV3，进化方向不可更改` : `机师等级 Lv.${player.plevel}` + (SURV ? `   装备栏 ${upKinds(player)}/${UP_KINDS}` : '') + (choiceQueue.length > 1 ? `   (待选 ${choiceQueue.length})` : ''), W / 2, evo ? 152 : 182);
   cardRects = [];
   const n = choices.length, top = evo ? 176 : 210, gap = n > 3 ? 112 : 124, ch = n > 3 ? 102 : 112;
   choices.forEach((u, i) => {
@@ -8572,7 +8600,7 @@ function drawHUD() {
   ctx.fillStyle = '#bff0ff'; ctx.fillRect(W - 31, 16, 4, 18); ctx.fillRect(W - 23, 16, 4, 18);
   ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(190,240,255,.85)'; ctx.textAlign = 'right';
   ctx.fillText(SURV ? '生存 ' + fmtTime(survT) : 'STAGE ' + stage, W - 8, 58);
-  if (SURV) { ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = survWave.on ? '#ffd28a' : '#9fe8ff'; ctx.fillText(survWave.on ? `第 ${survWave.n}/${survWaveGoal()} 波` : `下一波 ${Math.ceil(survWave.t)}`, W - 8, 74); }
+  if (SURV) { ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = survDoom ? '#ff8a7a' : survWave.on ? '#ffd28a' : '#9fe8ff'; ctx.fillText(survDoom ? `终结潮 · ${fmtTime(survDoom.t)}` : survWave.on ? `第 ${survWave.n}` + (survWaveGoal() ? `/${survWaveGoal()}` : '') + ' 波' : `下一波 ${Math.ceil(survWave.t)}`, W - 8, 74); }
   ctx.textAlign = 'left';
 
   // （连击只用来给分数加倍，随分数系统一起取消，不再显示）
@@ -8723,7 +8751,7 @@ function drawCapRes() {
     ctx.globalAlpha = 1;
   });
   const cu = Math.min(1, Math.max(0, (t - 1.4) * 1.5));
-  const rows = [['hourglass', '用时', fmtTime(r.took * cu)], ['crosshair', '击毁', fmt(Math.round(r.kills * cu))], ['ore', '采集矿石', String(Math.round(r.ore * cu))], ['planet', '已占领星球', String(save.planets.length)]];
+  const rows = [['hourglass', '用时', fmtTime(r.took * cu)], ['crosshair', '击毁', fmt(Math.round(r.kills * cu))], ['ore', '采集矿石', String(Math.round(r.ore * cu))], (r.doomT !== undefined ? ['burst', '终结潮坚持', fmtTime(r.doomT * cu)] : null) || ['planet', '已占领星球', String(save.planets.length)]];
   ctx.fillStyle = 'rgba(10,26,48,.9)'; roundRect(40, 370, W - 80, 124, 10); ctx.fill(); ctx.strokeStyle = 'rgba(90,200,255,.5)'; ctx.lineWidth = 1.2; ctx.stroke();
   rows.forEach(([gl, n, v], i) => { const y = 391 + i * 27; drawGlyph(gl, 64, y, 15, '#8fdcff'); ctx.textAlign = 'left'; ctx.font = `13px ${FONT}`; ctx.fillStyle = '#b9d6ea'; ctx.fillText(n, 82, y); ctx.textAlign = 'right'; ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(v, W - 58, y); });
   ctx.textAlign = 'center';
@@ -8746,6 +8774,7 @@ function drawGameOver() {
   ctx.shadowColor = '#f33'; ctx.shadowBlur = 16;
   ctx.font = `900 48px ${FONT}`; ctx.fillStyle = player.quit ? '#8fe6ff' : player.lostPlanet ? '#ffa04a' : '#ff5a4a'; ctx.fillText(player.quit ? '本局结束' : player.lostPlanet ? '基地失守' : '任务失败', W / 2, 230);
   ctx.shadowBlur = 0;
+  if (SURV && survDoom) { ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#ffb090'; ctx.fillText(`终结潮中坚持 ${fmtTime(survDoom.t)}`, W / 2, 268); }
   ctx.font = `bold 20px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(SURV ? `存活 ${fmtTime(survT)}  ·  第 ${survWave.n} 波` : `到达第 ${stage} 关`, W / 2, 300);
   ctx.font = `16px ${FONT}`; ctx.fillStyle = '#9fe2ff'; ctx.fillText(`击毁 ${fmt(player.kills || 0)}` + (SURV ? `  ·  最久 ${fmtTime(survBest)}` : ''), W / 2, 334);
   ctx.font = `bold 17px ${FONT}`; ctx.fillStyle = '#bff4ff'; const t = '本局获得星晶  ' + fmt(player.earned || 0), tw = ctx.measureText(t).width;
