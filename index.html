@@ -1124,7 +1124,7 @@ function survAim(dt) {
   // 首领和它的炮台也算瞄准目标
   if (boss && !boss.entering && boss.dying <= 0) for (const t of [...boss.turrets.filter(t => t.hp > 0).map(t => ({ x: boss.x + t.dx, y: boss.y + t.dy })), { x: boss.x, y: boss.y + boss.def.oy }]) { const d = (t.x - cx) ** 2 + (t.y - cy) ** 2; if (d < bd) { bd = d; best = t; } }
   // 星球据点也算瞄准目标（核心挖开后才算）
-  if (PLANET) for (const t of targets()) if (t.kind === 'p') { const core = t.ref.type === 'core', dd = (t.x - cx) ** 2 + (t.y - cy) ** 2; if (core && dd > 480 * 480) continue; const d = dd * (core ? .25 : 1); if (d < bd) { bd = d; best = t; } }   // 核心（包括还埋着的）在 480 以内才瞄，并且优先
+  if (PLANET) for (const t of targets()) if (t.kind === 'p') { const core = t.ref.type === 'core', dd = (t.x - cx) ** 2 + (t.y - cy) ** 2; if (core && (dd > 480 * 480 || gensAlive(t.ref.p))) continue; /* 护盾还在的核心打不动，不抢瞄准 */ const d = dd * (core ? .25 : 1); if (d < bd) { bd = d; best = t; } }   // 核心（包括还埋着的）在 480 以内才瞄，并且优先
   // 锁定不乱跳：当前目标还活着、在 600 内，就一直打它，除非出现近得多（不到 0.6 倍距离）的敌人
   const cur = P.aimE && P.aimE.hp > 0 && enemies.includes(P.aimE) ? P.aimE : null;
   if (cur) { const cd = (cur.x - cx) ** 2 + (cur.y - cy) ** 2; if (cd < 600 * 600 && !(best && bd < cd * .36)) { best = cur; bd = cd; } }
@@ -1178,6 +1178,13 @@ function survFrame(fn) {
 // 生存模式一共 20 波：每波刷 17–26 秒（越往后越长），然后停 6 秒喘口气。
 // 通关条件：打掉星球核心（占领），然后守住指挥中心直到第 20 波结束；没占领就过了 20 波会进入加时，直到占领后再守 3 波
 const SURV_WAVES = 20, SURV_WAVE_ON = n => Math.min(26, 16 + n), SURV_WAVE_OFF = 6;
+// 等级保底：每撑过一波，机师等级至少补到"下一波的波数"（第 9 波开始时至少 9 级）。
+// 只补掉队的：晶体捡得少、或者忙着打据点没空刷怪时不会越打越弱；等级本来就够的局不受影响
+function survLevelFloor(lv) {
+  const P = player; let n = 0;
+  while (!P.dead && P.plevel < lv && n < 20) { P.xp = P.xpNext; gainXP(0); n++; }
+  return n;
+}
 let survWave = { n: 1, on: true, t: SURV_WAVE_ON(1) };
 const survWaveGoal = () => { const t = planetTarget(); return t && t.def ? t.def.winWave : SURV_WAVES; };
 function survWaveStep(dt) {
@@ -1186,7 +1193,8 @@ function survWaveStep(dt) {
   if (w.on) {
     const t = planetTarget();
     if (t && t.def && w.n >= t.def.winWave) { defenseWon(t); return; }   // 守住了，通关
-    w.on = false; w.t = SURV_WAVE_OFF; floatText(W / 2, 96, `第 ${w.n} 波结束`, 16, '#9fe8ff', 1.6); tone(523, .15, 'triangle', .05); tone(784, .2, 'triangle', .05, 0, .12);
+    const up = survLevelFloor(w.n + 1);
+    w.on = false; w.t = SURV_WAVE_OFF; floatText(W / 2, 96, up ? `第 ${w.n} 波结束 · 等级 +${up}` : `第 ${w.n} 波结束`, 16, '#9fe8ff', 1.6); tone(523, .15, 'triangle', .05); tone(784, .2, 'triangle', .05, 0, .12);
     if (w.n >= SURV_WAVES && !(t && t.def)) floatText(W / 2, 118, '加时 · 尽快打掉星球核心', 14, '#ff9a7a', 2.2);
   }
   else { w.n++; w.on = true; w.t = SURV_WAVE_ON(w.n); floatText(W / 2, 96, `第 ${w.n} 波`, 20, '#ffd28a', 1.8); tone(330, .2, 'sawtooth', .04); tone(440, .25, 'sawtooth', .04, 0, .15); }
@@ -1209,7 +1217,9 @@ function survUpdate(dt) {
   if ((survRockT -= dt) <= 0) {
     survRockT = rnd(4, 8);
     const a = rnd(0, TAU), b = a + Math.PI + rnd(-.4, .4), sp = rnd(70, 120);
-    spawnEnemy(['rock', 'rock', 'junk', 'scrap', 'shard', 'pod'][Math.random() * 6 | 0], player.x + Math.cos(a) * 480, player.y + Math.sin(a) * 480, { vx: Math.cos(b) * sp, vy: Math.sin(b) * sp, noG: true, spin: rnd(-2, 2) });
+    const rx = player.x + Math.cos(a) * 480, ry = player.y + Math.sin(a) * 480;
+    // 出生点在岩层里的陨石不刷（原来会直接在星球内部炸出一个坑，有时还把核心炸得提前暴露）
+    if (!planetSolidAt(rx, ry)) spawnEnemy(['rock', 'rock', 'junk', 'scrap', 'shard', 'pod'][Math.random() * 6 | 0], rx, ry, { vx: Math.cos(b) * sp, vy: Math.sin(b) * sp, noG: true, spin: rnd(-2, 2) });
   }
   survFxUpdate(dt);
   survBossTick(dt);
@@ -1803,7 +1813,9 @@ function baseStep(p, dt) {
     floatText(W / 2, SURV_Y - 150, BUILDS[s.b].name + ' 遭到袭击', 14, '#ff9a7a', 1.8);
   }
 }
-function openBuild(p, s) { buildCtx = { p, pad: s }; state = 'build'; drag = null; tone(523, .12, 'triangle', .06); tone(659, .15, 'triangle', .06, 0, .08); }
+// 改装 / 建造菜单的点击反馈：buildFx = 刚点的那张卡（成功：闪光 + 弹起 + 火花；矿石不够：左右抖一下），buildPops = 飘出来的效果文字和花费
+let buildFx = null, buildPops = [];
+function openBuild(p, s) { buildCtx = { p, pad: s }; buildFx = null; buildPops = []; state = 'build'; drag = null; tone(523, .12, 'triangle', .06); tone(659, .15, 'triangle', .06, 0, .08); }
 function closeBuild() { buildCtx = null; state = 'play'; last = performance.now(); }
 // 空地基能建的：每颗星球只能有一个的建筑（雷达、改装台）建过就不再出现
 const buildIds = () => {
@@ -1818,12 +1830,16 @@ function buildAct(a) {
   if (a === 'bclose') { closeBuild(); return; }
   if (a.startsWith('m:')) {   // 改装：买完菜单不关，可以连续买
     const id = a.slice(2), cost = modCost(id); if (!MODS[id] || !modOk(id)) return;
-    if (ore < cost) { tone(150, .12, 'square', .04); return; }
-    ore -= cost; modN[id] = (modN[id] || 0) + 1; MODS[id].apply(player); sfxPick(); return;
+    if (ore < cost) { tone(150, .12, 'square', .04); buildFx = { id, t: time, ok: false }; return; }
+    ore -= cost; modN[id] = (modN[id] || 0) + 1; MODS[id].apply(player); sfxPick();
+    const r = uiRects.find(q => q.act === a) || { x: 30, y: 200, w: W - 60, h: 72 };
+    buildFx = { id, t: time, ok: true }; buildPops.push({ x: r.x + r.w * .62, y: r.y + r.h / 2, txt: MODS[id].txt, c: MODS[id].c, cost, t: time });
+    tone(660, .08, 'triangle', .06); tone(880, .1, 'triangle', .06, 0, .07); tone(1320, .2, 'triangle', .05, 0, .14);
+    return;
   }
   if (!a.startsWith('b:')) return;
   const { p, pad: s } = buildCtx, id = a.slice(2), lv = s.b ? s.lv + 1 : 1, cost = buildCost(id, lv);
-  if (cost === undefined || buildBlocked(s, id) || ore < cost) { tone(150, .12, 'square', .04); return; }
+  if (cost === undefined || buildBlocked(s, id) || ore < cost) { tone(150, .12, 'square', .04); buildFx = { id, t: time, ok: false }; return; }
   ore -= cost; s.b = id; s.lv = lv; s.t = 0; s.hp = s.max = buildHp(id, lv); sfxPick();
   if (id === 'radar') { for (const v of p.veins) v.found = true; p.core.revealed = true; }
   floatText(p.x + s.dx, p.y + s.dy - 34, BUILDS[id].name + (lv > 1 ? ' Lv' + lv : ' 建成'), 16, `rgb(${BUILDS[id].c})`, 1.4);
@@ -1863,20 +1879,42 @@ function drawBuild() {
     ids.forEach((id, i) => {
       const d = mod ? MODS[id] : BUILDS[id], lv = mod ? 0 : s.lv + 1, cost = mod ? modCost(id) : buildCost(id, lv), ok = ore >= cost, y = 200 + i * gap, col = ok ? `rgb(${d.c})` : 'rgb(120,130,140)';
       uiRects.push({ x: 30, y, w: W - 60, h: ch, act: (mod ? 'm:' : 'b:') + id });
+      const fx = buildFx && buildFx.id === id ? time - buildFx.t : 9, hop = fx < .3 ? Math.sin(fx / .3 * Math.PI) : 0;
+      ctx.save();
+      if (hop) { const k = buildFx.ok ? 1 + .06 * hop : 1; ctx.translate(W / 2 + (buildFx.ok ? 0 : Math.sin(fx * 75) * 6 * (1 - fx / .3)), y + ch / 2); ctx.scale(k, k); ctx.translate(-W / 2, -y - ch / 2); }
       ctx.fillStyle = ok ? 'rgba(10,30,50,.94)' : 'rgba(10,20,30,.85)'; roundRect(30, y, W - 60, ch, 8); ctx.fill();
       ctx.strokeStyle = ok ? col : 'rgba(150,160,170,.5)'; ctx.lineWidth = 1.6; ctx.stroke();
       ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(68, y + ch / 2, 24, 0, TAU); ctx.fill();
       drawGlyph(d.gl, 68, y + ch / 2, 26, col);
       ctx.textAlign = 'left'; ctx.font = `bold 17px ${FONT}`; ctx.fillStyle = ok ? '#fff' : 'rgba(190,200,210,.6)';
-      ctx.fillText(d.name + (!mod ? `  Lv${lv - 1} → Lv${lv}` : ''), 104, y + 24);
+      ctx.fillText(d.name + (!mod ? `  Lv${lv - 1} → Lv${lv}` : modN[id] ? `  Lv${modN[id]}` : ''), 104, y + 24);
       ctx.font = `12px ${FONT}`; ctx.fillStyle = ok ? '#cfe2f0' : 'rgba(190,200,210,.5)'; ctx.fillText(mod ? d.txt : d.desc(lv), 104, y + ch - 20);
       ctx.textAlign = 'right'; ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = ok ? '#ffd27a' : '#ff8a7a'; ctx.fillText(String(cost), W - 46, y + 25);
       drawGlyph('ore', W - 54 - ctx.measureText(String(cost)).width, y + 24, 13, ok ? '#ffd27a' : '#ff8a7a');
       ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.fillText(`[${i + 1}]`, W - 46, y + ch - 18);
+      if (fx < .45 && buildFx.ok) {
+        // 买成功：整张卡闪一下，边框变亮，图标四周迸出火花
+        const k = 1 - fx / .45;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = `rgba(${d.c},${.4 * k})`; roundRect(30, y, W - 60, ch, 8); ctx.fill();
+        ctx.strokeStyle = `rgba(255,255,255,${k})`; ctx.lineWidth = 3; ctx.stroke();
+        drawGlow(68, y + ch / 2, 60, d.c, .9 * k);
+        for (let j = 0; j < 10; j++) { const a = j / 10 * TAU + i, rr = 24 + (1 - k) * 70, sz = 3.2 * k; ctx.fillStyle = `rgba(255,255,255,${k})`; ctx.beginPath(); ctx.arc(68 + Math.cos(a) * rr, y + ch / 2 + Math.sin(a) * rr, sz, 0, TAU); ctx.fill(); }
+        ctx.globalCompositeOperation = 'source-over';
+      } else if (fx < .3) { ctx.fillStyle = `rgba(255,70,60,${.3 * (1 - fx / .3)})`; roundRect(30, y, W - 60, ch, 8); ctx.fill(); }   // 矿石不够：红一下
+      ctx.restore();
     });
     bottom = 200 + ids.length * gap;
   }
   ctx.textAlign = 'center';
+  buildPops = buildPops.filter(q => time - q.t < .9);
+  for (const q of buildPops) {
+    const k = (time - q.t) / .9, a = k < .12 ? k / .12 : Math.min(1, (1 - k) / .5);
+    ctx.globalAlpha = a; ctx.font = `900 ${Math.round(22 + 8 * Math.max(0, 1 - k * 6))}px ${FONT}`;
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,10,24,.9)'; ctx.strokeText(q.txt, q.x, q.y - k * 54); ctx.fillStyle = `rgb(${q.c})`; ctx.fillText(q.txt, q.x, q.y - k * 54);
+    ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#ff9a7a'; ctx.fillText('-' + q.cost, W / 2 + 48 + ow / 2, 173 - k * 16);
+  }
+  ctx.globalAlpha = 1;
   uiBtn(W / 2 - 70, bottom + 4, 140, 38, '离开 [Esc]', 'bclose');
 }
 function drawOre(p) {
@@ -2687,7 +2725,7 @@ const UPGRADES = [
   { id: 'crit', name: '弱点解析', icon: '暴', rar: 1, max: 4, desc: '12% 几率造成 2.5 倍暴击伤害', apply: s => s.crit += .12 },
   { id: 'blast', name: '殉爆反应', icon: '爆', rar: 1, max: 3, desc: '击毁敌机时引发范围爆炸', apply: s => s.blast++ },
   { id: 'slow', name: '时间缓流', icon: '缓', rar: 1, max: 3, desc: '敌方子弹速度 -10%', apply: s => s.bulletSlow *= .9 },
-  { id: 'wing', name: '僚机支援', icon: '僚', rar: 2, max: 5, desc: '获得一架自动射击的僚机', apply: s => s.wingmen++ },
+  { id: 'wing', name: '僚机支援', icon: '僚', rar: 2, max: 5, desc: '获得一架自动射击的僚机', apply: s => s.wingmen++, cond: p => p.s.wingmen < 5 },
   { id: 'chain', name: '雷电链', icon: '雷', rar: 2, max: 3, desc: '命中时 15% 几率弹射闪电', apply: s => s.chain += .15 },
   { id: 'leech', name: '纳米修复', icon: '愈', rar: 2, max: 2, desc: '每击毁 40 架敌机修复 1 格护甲', apply: s => s.leech++ },
   { id: 'dodge', name: '相位闪避', icon: '闪', rar: 2, max: 3, desc: '受到攻击时 15% 几率闪避', apply: s => s.dodge += .15 },
@@ -2713,8 +2751,8 @@ const SUBS = {
 const WEAPON_IDS = Object.keys(WEAPONS), SUB_IDS = Object.keys(SUBS);
 // 武器平衡系数（装备没有稀有度了，强弱靠这里拉平）
 const WEAPON_BAL = { vulcan: 1.3, laser: 1, thunder: .75, wave: .6, flame: 1.8 };
-const SUB_BAL = { missile: .85, sublaser: .75, rocket: 1, orbit: 1.1, hole: 1, shotgun: 1.3, pulse: 1.1, strike: 1.5 };
-const WING_BAL = { gun: 1.4, scatter: 1.2, lance: 1, guard: 2, seeker: 1, tesla: .55 };
+const SUB_BAL = { missile: .85, sublaser: .45, rocket: 1, orbit: 1.1, hole: 1, shotgun: 1.3, pulse: 1.1, strike: 1.5 };
+const WING_BAL = { gun: 1, scatter: 1.2, lance: 1, guard: 2, seeker: 1, tesla: .55 };
 // 副武器可以同时装 3 种（player.subs），各自有等级和冷却；player.sub / subLv 指向第一种，给旧代码判断"有没有副武器"用
 const SUB_MAX = 3;
 function syncSub(p) { const s = p.subs[0]; p.sub = s ? s.id : null; p.subLv = s ? s.lv : 0; }
@@ -2767,6 +2805,14 @@ function weaponLabel() { const b = branchOf(); return b ? BRANCHES[player.weapon
 // 闯关模式卡池抽空时的补位卡（原来是加分的「战争资金」，分数取消后改成充能）
 const CASH = { id: 'cash', name: '能量补给', icon: '能', rar: 0, max: 999, noStack: true, desc: '能量充满', apply: () => { odGauge = 100; } };
 const UP_BY_ID = Object.fromEntries(UPGRADES.concat(CASH).map(u => [u.id, u]));
+// 每局最多带 UP_KINDS 种强化（主炮 / 副武器 / 维修不算）：带满以后只出已有的那几种，不能把所有强化都拿全。
+// 没有东西可选的升级，每级改给 SURPLUS_CRYSTAL 颗星晶
+const UP_KINDS = 8, SURPLUS_CRYSTAL = 5;
+const upKinds = P => Object.keys(P.ups).filter(id => P.ups[id] > 0).length;
+// 选卡界面刚弹出的 CHOICE_LOCK 秒内不接受点击（卡片一张张亮起来）：连升好几级时不会一闪而过、误点下一轮
+const CHOICE_LOCK = .5;
+let choiceT = -9;
+const choiceReady = () => time - choiceT > CHOICE_LOCK;
 function grantUp(id) {
   const u = UP_BY_ID[id], P = player;
   if (!u || (P.ups[id] || 0) >= u.max) return false;
@@ -2780,6 +2826,7 @@ function rollChoices(minRar) {
   if (minRar === 'evo') return UPGRADES.filter(u => u.evo === P.weapon && !P.branch[P.weapon]);
   const pool = UPGRADES.filter(u => u.rar < 3 && !u.id.startsWith('main_') && (P.ups[u.id] || 0) < u.max && u.rar >= minRar && (!u.cond || u.cond(P))
     && (SURV ? u.id !== 'rate' && u.id !== 'magnet' && u.id !== 'bomb' : !u.surv));
+  if (upKinds(P) >= UP_KINDS) for (let i = pool.length - 1; i >= 0; i--) { const u = pool[i]; if (!u.noStack && u.id !== 'heal' && !(P.ups[u.id] > 0)) pool.splice(i, 1); }
   // 生存模式里攻速 / 移速 / 吸附卡更容易出现（"高速装填"和"引力磁场"由它们取代）
   const wt = u => RAR[u.rar].w * (u.id === 'aspd' || u.id === 'mspd' || u.id === 'pull' ? SURV_ASPD_WEIGHT : 1);
   const out = [];
@@ -2803,9 +2850,12 @@ function rollChoices(minRar) {
   return out;
 }
 function openChoice() {
-  choices = rollChoices(choiceQueue[0]);
-  if (!choices.length) { choiceQueue.shift(); if (choiceQueue.length) openChoice(); return; }
-  state = 'choose'; drag = null;
+  // 没有可选的强化了（都拿满了）：这一级改给星晶，不弹选卡界面
+  let extra = 0;
+  for (; choiceQueue.length; choiceQueue.shift()) { choices = rollChoices(choiceQueue[0]); if (choices.length) break; if (SURV && choiceQueue[0] !== 'evo') extra++; }
+  if (extra) { const c = extra * SURPLUS_CRYSTAL; save.crystals += c; player.earned = (player.earned || 0) + c; persist(); floatText(player.x, player.y - 60, `星晶 +${c}`, 16, '#bff4ff', 1.4); }
+  if (!choiceQueue.length) return;
+  state = 'choose'; drag = null; choiceT = time;
   if (choiceQueue[0] === 'evo') { tone(392, .2, 'sawtooth', .06); tone(784, .4, 'triangle', .08, 0, .15); }
   else { tone(523, .15, 'triangle', .07); tone(784, .25, 'triangle', .07, 0, .1); }
 }
@@ -2818,11 +2868,11 @@ function pickChoice(i) {
   if (SURV && u.id === 'pull') { floatText(player.x, player.y - 38, `吸附范围 ${Math.round(SURV_PULL0 * survPullK())}`, 13, '#9fe8ff', 1.2); addPart({ t: 'ring', x: player.x, y: player.y, vx: 0, vy: 0, life: .6, max: .6, size: SURV_PULL0 * survPullK() * 2, c: '110,240,255' }); }
   choiceQueue.shift();
   if (choiceQueue.length) openChoice();
-  else { state = 'play'; last = performance.now(); player.inv = Math.max(player.inv, .8); }
+  if (!choiceQueue.length) { state = 'play'; last = performance.now(); player.inv = Math.max(player.inv, .8); }
 }
 function reroll() {
   if (player.rerolls <= 0 || choiceQueue[0] === 'evo') return;
-  player.rerolls--; choices = rollChoices(choiceQueue[0]); tone(660, .1, 'square', .05);
+  player.rerolls--; choices = rollChoices(choiceQueue[0]); choiceT = time; tone(660, .1, 'square', .05);
 }
 function gainXP(n) {
   const P = player;
@@ -2870,7 +2920,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
   if (e.code === 'KeyM') muted = !muted;
   if (e.code === 'KeyG' || e.code === 'Backquote') toggleGM();
-  if (state === 'choose') {
+  if (state === 'choose' && choiceReady()) {
     if (e.code === 'Digit1' || e.code === 'Numpad1') pickChoice(0);
     if (e.code === 'Digit2' || e.code === 'Numpad2') pickChoice(1);
     if (e.code === 'Digit3' || e.code === 'Numpad3') pickChoice(2);
@@ -2897,7 +2947,9 @@ cv.addEventListener('pointerdown', e => {
   if (state === 'title' || state === 'over') { if (state === 'title') sysOpen = false; else if (phaseT > (capRes ? 2.3 : 0.8)) restartRun(); return; }   // 主菜单点空白处不再直接开始
   if (state === 'build') { buildAct(uiHit(p)); return; }
   if (state === 'choose') {
-    cardRects.forEach((r, i) => { if (p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h) pickChoice(i); });
+    if (!choiceReady()) return;
+    const hit = cardRects.findIndex(r => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h);
+    if (hit >= 0) { pickChoice(hit); return; }
     const r = rerollRect; if (r && p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h) reroll();
     return;
   }
@@ -3085,7 +3137,75 @@ function chainFrom(x, y, src) {
     cx = best.x; cy = best.y;
   }
 }
-function boltFx(x, y, x2, y2, c) { addPart({ t: 'bolt', x, y, x2, y2, vx: 0, vy: 0, life: .12, max: .12, c }); }
+// ================= 闪电（雷霆和所有电弧共用）=================
+let thFlashT = -9;   // 雷霆上一次放电的时间：机体上的电弧跟着亮一下
+const thunderCol = br => br === 'exec' ? '225,130,255' : br === 'emp' ? '90,235,255' : '150,165,255';
+// 机体贴图上的点（贴图坐标）在屏幕上的位置：跟着机体缩放和生存模式的转向
+function shipPt(lx, ly) {
+  const P = player, x = P.x + lx * SHIP_K, y = P.y + ly * SHIP_K;
+  if (!SURV || !P.ang) return { x, y };
+  const cx = P.x, cy = P.y + HIT_OY, c = Math.cos(P.ang), s = Math.sin(P.ang), dx = x - cx, dy = y - cy;
+  return { x: cx + dx * c - dy * s, y: cy + dx * s + dy * c };
+}
+// 机头放电点：离战机坐标的距离（像素，负数 = 朝前）/ 屏幕上的位置
+function shipNoseY() { const g = ShipA.geo(LOOK, player.lv); return g ? g.gy * SHIP_K : -40; }
+function shipNose() { return shipPt(0, shipNoseY() / SHIP_K); }
+// 闪电的形状：中点位移生成的折线（o[i] = 第 i 个节点离"两端连线"的垂直偏移，像素；u[i] = 沿连线的位置 0–1），
+// 外加几条分叉（br）和落点的小岔（st）。只记相对连线的偏移，所以两端移动（机头转向、目标移动、镜头滚动）时整道闪电跟着走
+function boltShape(len, forks = 0, rough = .2, brMax = 130) {
+  const disp = (m, amp) => { const q = new Array(m + 1).fill(0); for (let st = m; st > 1; st >>= 1, amp *= .55) for (let i = st >> 1; i < m; i += st) q[i] = (q[i - (st >> 1)] + q[i + (st >> 1)]) / 2 + rnd(-amp, amp); return q; };
+  const n = 1 << (len < 46 ? 2 : len < 120 ? 3 : len < 300 ? 4 : 5), o = disp(n, Math.min(44, len * rough));
+  const u = o.map((_, i) => i === 0 ? 0 : i === n ? 1 : (i + rnd(-.3, .3)) / n), br = [], st = [];
+  if (len > 70) for (let k = 0; k < forks; k++) { const L = Math.min(brMax, len * rnd(.14, .3)); br.push({ i: 1 + (Math.random() * n * .7 | 0), a: (Math.random() < .5 ? -1 : 1) * rnd(.3, .8), L, o: disp(L < 36 ? 4 : 8, L * .3) }); }
+  if (len > 50) for (let k = 0, m = 2 + (Math.random() * 2 | 0); k < m; k++) { const L = rnd(12, 26); st.push({ a: rnd(-2.4, 2.4), L, o: disp(2, L * .22) }); }
+  return { n, u, o, br, st, px: new Array(n + 1), py: new Array(n + 1) };
+}
+// 亮度随时间：先是一下最亮的主闪，暗一下，再回闪一次，然后熄灭（f = 剩余寿命比例 1 → 0）
+const boltEnv = f => f > .7 ? 1 : f > .52 ? .38 : f > .3 ? .82 : f / .3 * .82;
+// 画一道闪电：两层外晕 + 白热的芯（起点粗、末端细的带状多边形）+ 分叉。e = 亮度 0–1，w = 粗细倍率
+function strokeBolt(sh, x0, y0, x1, y1, c, e, w = 1, twigs = true) {
+  const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy); if (len < 2 || e <= 0) return;
+  const ux = dx / len, uy = dy / len, nx = -uy, ny = ux, n = sh.n, px = sh.px, py = sh.py;
+  for (let i = 0; i <= n; i++) { const t = sh.u[i] * len, o = sh.o[i]; px[i] = x0 + ux * t + nx * o; py[i] = y0 + uy * t + ny * o; }
+  const trunk = () => { ctx.beginPath(); ctx.moveTo(px[0], py[0]); for (let i = 1; i <= n; i++) ctx.lineTo(px[i], py[i]); };
+  ctx.lineJoin = ctx.lineCap = 'round';
+  trunk();
+  ctx.strokeStyle = `rgba(${c},${.13 * e})`; ctx.lineWidth = 17 * w; ctx.stroke();
+  ctx.strokeStyle = `rgba(${c},${.4 * e})`; ctx.lineWidth = 7 * w; ctx.stroke();
+  if (twigs && (sh.br.length || sh.st.length)) {
+    // 分叉：j0–j1 是这一段占整根的比例。整根画外晕，前六成画亮芯，后四成只剩一条暗的细线（越往梢越细越暗）
+    const tw = (bx, by, a, L, o, j0, j1) => { const c0 = Math.cos(a), s0 = Math.sin(a), tx = ux * c0 - uy * s0, ty = ux * s0 + uy * c0, m = o.length - 1, pt = j => { const t = j / m * L; return [bx + tx * t - ty * o[j], by + ty * t + tx * o[j]]; }; const a0 = Math.round(j0 * m), a1 = Math.round(j1 * m); if (a1 <= a0) return; ctx.moveTo(...pt(a0)); for (let j = a0 + 1; j <= a1; j++) ctx.lineTo(...pt(j)); };
+    const all = (j0, j1) => { ctx.beginPath(); for (const b of sh.br) tw(px[b.i], py[b.i], b.a, b.L, b.o, j0, j1); for (const s of sh.st) tw(px[n], py[n], s.a, s.L, s.o, j0, j1); };
+    all(0, 1); ctx.strokeStyle = `rgba(${c},${.24 * e})`; ctx.lineWidth = 4.5 * w; ctx.stroke();
+    all(0, .6); ctx.strokeStyle = `rgba(255,255,255,${.85 * e})`; ctx.lineWidth = 1.4 * w; ctx.stroke();
+    all(.6, 1); ctx.strokeStyle = `rgba(235,240,255,${.45 * e})`; ctx.lineWidth = .8 * w; ctx.stroke();
+  }
+  const hw = i => (2.2 - 1.45 * sh.u[i]) * w;
+  ctx.beginPath(); ctx.moveTo(px[0] + nx * hw(0), py[0] + ny * hw(0));
+  for (let i = 1; i <= n; i++) ctx.lineTo(px[i] + nx * hw(i), py[i] + ny * hw(i));
+  for (let i = n; i >= 0; i--) ctx.lineTo(px[i] - nx * hw(i), py[i] - ny * hw(i));
+  ctx.closePath(); ctx.fillStyle = `rgba(255,255,255,${.95 * e})`; ctx.fill();
+  trunk(); ctx.strokeStyle = `rgba(255,255,255,${.9 * e})`; ctx.lineWidth = 1.1 * w; ctx.stroke();   // 再压一条细线，转折处不断
+  ctx.lineJoin = 'miter'; ctx.lineCap = 'butt';
+}
+// 闪电粒子：nose = 起点钉在机头；par / at = 从另一道闪电的某个位置分叉出来；tg = 终点跟着目标
+function drawBoltPart(p, f) {
+  let x0 = p.x, y0 = p.y, x1 = p.x2, y1 = p.y2;
+  if (p.nose && !player.dead) { const q = shipNose(); x0 = q.x; y0 = q.y; }
+  else if (p.par && p.par.sh && p.par.sh.px[0] !== undefined) { const s = p.par.sh, i = Math.round(p.at * s.n); x0 = s.px[i]; y0 = s.py[i]; }
+  if (p.tg && tAlive(p.tg)) { const q = tPos(p.tg); x1 = p.x2 = q.x + (p.jx || 0); y1 = p.y2 = q.y + (p.jy || 0); }
+  const len = Math.hypot(x1 - x0, y1 - y0); if (len < 2) return;
+  if (!p.sh) p.sh = boltShape(len, p.forks ?? (len > 150 ? 2 : len > 70 ? 1 : 0));
+  const e = boltEnv(f), w = p.w || clamp(len / 90, .5, 1);
+  ctx.globalCompositeOperation = 'lighter';
+  strokeBolt(p.sh, x0, y0, x1, y1, p.c, e, w, f > .5);
+  drawGlow(x1, y1, 34 * w, p.c, .85 * e); drawGlow(x1, y1, 11 * w, '255,255,255', .7 * e);
+  if (p.nose) { drawGlow(x0, y0, 26, p.c, .8 * e); drawGlow(x0, y0, 9, '255,255,255', .9 * e); }
+}
+function boltFx(x, y, x2, y2, c, o) {
+  const p = Object.assign({ t: 'bolt', x, y, x2, y2, vx: 0, vy: 0, life: .12, max: .12, c }, o); p.max = p.life;
+  addPart(p); return p;
+}
 
 // ---------- 目标 / 光束工具 ----------
 function tAlive(t) {
@@ -3182,10 +3302,10 @@ function laserCut() {
 }
 // 雷霆 · 天雷：每 2.2 秒，从天上劈下一道大雷，目标周围 80 内的敌人受到 6 倍雷击伤害并麻痹 0.6 秒
 const SKYBOLT_CD = 2.2;
-function skyBolt(t, dmg) {
+function skyBolt(t, dmg, col = '150,165,255') {
   const x = t.x, y = t.y;
-  for (const o of targets()) if (Math.hypot(o.x - x, o.y - y) < 80 + o.r) { applyHit(o, dmg, o.x, o.y, '255,240,140', .5); if (o.kind === 'e') o.ref.stun = Math.max(o.ref.stun || 0, .6); }
-  subFx.push({ type: 'skybolt', x, y, t: 0, seed: Math.random() * 1000 });
+  for (const o of targets()) if (Math.hypot(o.x - x, o.y - y) < 80 + o.r) { applyHit(o, dmg, o.x, o.y, col, .5); if (o.kind === 'e') o.ref.stun = Math.max(o.ref.stun || 0, .6); }
+  subFx.push({ type: 'skybolt', x, y, t: 0, c: col });
   shake = Math.max(shake, 5); noise(.35, .16, 3200); tone(90, .4, 'sawtooth', .06, -.5);
 }
 // 熔火喷流 · 熔岩火池：喷火时每 1.4 秒在火焰前端留下一片火池，持续 3 秒，踩进去的敌人被点燃
@@ -3263,16 +3383,28 @@ function fireWave(eff, rate, br) {
 }
 function fireThunder(eff, rate, br) {
   const P = player, S = P.s, net = br === 'net', emp = br === 'emp', exec = br === 'exec';
-  P.fireT += (net ? .2 : .12) / rate;
+  const iv = (net ? .2 : .12) / rate;
+  P.fireT += iv;
   const n = 1 + Math.floor(eff / 2) + S.spread, dmg = (2 + eff * .5) * S.dmgMul * (exec ? 1.15 : 1);
-  const col = exec ? '230,140,255' : emp ? '120,200,255' : '255,230,90';
+  const col = thunderCol(br);
   const tg = nearestTargets(P.x, P.y - 30, n, 520), all = targets();
-  if (tg[0] && time - (P.boltAt ?? -9) >= SKYBOLT_CD) { P.boltAt = time; skyBolt(tg[0], dmg * 6); }   // 天雷
+  if (tg[0] && time - (P.boltAt ?? -9) >= SKYBOLT_CD) { P.boltAt = time; skyBolt(tg[0], dmg * 6, col); }   // 天雷
   if (tg[0]) P.mainTarget = tg[0];
-  if (!tg.length) boltFx(P.x, P.y - 40, P.x + rnd(-50, 50), P.y - rnd(150, 240), col);
-  let killed = false;
+  // 闪电从机头的放电点打出去，起点一直钉在机头上。持续时间跟着射速走：
+  // 打得慢时一道一道劈（带回闪），打得快时连成一条不停重画的电弧
+  const nx = P.x, ny = P.y + shipNoseY(), life = clamp(iv * .9, .1, .2);
+  thFlashT = time;
+  if (!tg.length) boltFx(nx, ny, nx + rnd(-34, 34), ny - rnd(60, 110), col, { nose: true, life: .1, w: .6, forks: 2 });   // 没目标：机头前一小段空放电
+  let killed = false, trunk = null;
   for (const t of tg) {
-    boltFx(P.x, P.y - 40, t.x + rnd(-6, 6), t.y + rnd(-6, 6), col);
+    const jx = rnd(-6, 6), jy = rnd(-6, 6);
+    if (!trunk) trunk = boltFx(nx, ny, t.x + jx, t.y + jy, col, { nose: true, life, tg: t, jx, jy, forks: 2, w: Math.min(1.5, 1 + .17 * (tg.filter(o => o.ref === t.ref).length - 1)) });   // 主干：几道都打同一个目标时合成更粗的一道
+    else if (t.ref !== tg[0].ref) {
+      // 其余目标：离主干更近的，从主干的中段或末端分叉过去（一道闪电劈开）；方向差得远的才单独从机头打
+      const T0 = tg[0], mx = (nx + T0.x) / 2, my = (ny + T0.y) / 2, dN = Math.hypot(t.x - nx, t.y - ny), dM = Math.hypot(t.x - mx, t.y - my), dE = Math.hypot(t.x - T0.x, t.y - T0.y);
+      if (Math.min(dM, dE) < dN * .8) boltFx(dE < dM ? T0.x : mx, dE < dM ? T0.y : my, t.x + jx, t.y + jy, col, { par: trunk, at: dE < dM ? 1 : .5, life, tg: t, jx, jy, w: .8, forks: 1 });
+      else boltFx(nx, ny, t.x + jx, t.y + jy, col, { nose: true, life, tg: t, jx, jy, w: .85, forks: 1 });
+    }
     if (zap(t, dmg, col, br)) killed = true;
     if (net) {
       const seen = new Set([t.ref]); let frontier = [t], jumps = 4 + eff;
@@ -3280,7 +3412,7 @@ function fireThunder(eff, rate, br) {
         const next = [];
         for (const f of frontier) for (const o of all) {
           if (jumps <= 0 || seen.has(o.ref) || o.ref.hp <= 0) continue;
-          if (Math.hypot(o.x - f.x, o.y - f.y) < 150) { seen.add(o.ref); jumps--; boltFx(f.x, f.y, o.x, o.y, col); if (zap(o, dmg * .7, col, br)) killed = true; next.push(o); }
+          if (Math.hypot(o.x - f.x, o.y - f.y) < 150) { seen.add(o.ref); jumps--; boltFx(f.x, f.y, o.x, o.y, col, { life, tg: o, w: .7, forks: 0 }); if (zap(o, dmg * .7, col, br)) killed = true; next.push(o); }
         }
         frontier = next;
       }
@@ -3763,10 +3895,12 @@ function killEnemy(e) {
   const r = Math.random(), r2 = Math.random();
   // 生存模式：不掉"火力升级"（武器等级靠选"主炮升级"卡）；精英掉副武器 / 炸弹，小怪偶尔掉护甲修复
   if (SURV) {
-    if (e.champ) { dropPickup(e.x, e.y, 'H'); survDropBomb(e.x + 16, e.y); }
-    if (e.type === 'heavy' || e.type === 'carrier' || e.type === 'hive' || e.type === 'cruiser') { if (r < .6 && player.sub) dropPickup(e.x, e.y, 'S'); else if (r < .8) survDropBomb(e.x, e.y); if (r2 < .5) dropPickup(e.x + 18, e.y, 'H'); }
-    else if (r < .008) dropPickup(e.x, e.y, 'H');
-    else if (r < .014) survDropBomb(e.x, e.y);   // 小怪也会掉炸弹
+    // 护甲修复（绿色加号）：精英个体 10%、大型敌机 30%、小怪 0.4%，场上最多同时 2 个（原来精英个体必掉，后期满地都是）
+    const heal = (x, y) => { if (pickups.filter(q => q.k === 'H').length < 2) dropPickup(x, y, 'H'); };
+    if (e.champ) { if (r2 < .1) heal(e.x, e.y); survDropBomb(e.x + 16, e.y); }
+    if (e.type === 'heavy' || e.type === 'carrier' || e.type === 'hive' || e.type === 'cruiser') { if (r < .6 && player.sub) dropPickup(e.x, e.y, 'S'); else if (r < .8) survDropBomb(e.x, e.y); if (r2 > .7) heal(e.x + 18, e.y); }
+    else if (r < .004) heal(e.x, e.y);
+    else if (r < .01) survDropBomb(e.x, e.y);   // 小怪也会掉炸弹
     // 吸取经验球 / 满能量：大型敌机掉率高，小怪偶尔掉；场上同种最多一个
     const r3 = Math.random(), big = e.champ || e.type === 'heavy' || e.type === 'carrier' || e.type === 'hive' || e.type === 'cruiser';
     if (r3 < (big ? .25 : .008)) survDropOnce(e.x - 16, e.y + 14, 'M');
@@ -4424,14 +4558,15 @@ function applyLoadout(P) {
   P.maxArmor += Math.floor((fs - 1) / 2); P.armor = P.maxArmor;
   P.lv = P.lastLv = 1;
   if (L.sub && save.gear[L.sub]) { const ss = gearStar(L.sub); P.subs = [{ id: GEAR[L.sub].id, lv: ss >= 5 ? 3 : ss >= 3 ? 2 : 1, t: 0 }]; syncSub(P); }
-  if (L.wing && save.gear[L.wing]) { const gs = gearStar(L.wing); P.wingType = GEAR[L.wing].id; }   // 僚机装备只决定类型；数量全靠局内升级卡，和星级无关
+  // 装备了僚机：开局自带 1 架（原来只决定类型，要抽到「僚机支援」卡才出现，装了等于摆设）；更多的靠局内升级卡，最多 5 架
+  if (L.wing && save.gear[L.wing]) { P.wingType = GEAR[L.wing].id; S.wingmen = 1; }
   P.earned = 0;
 }
 function gearEffect(k) {
   const d = GEAR[k], s = gearStar(k);
   if (d.slot === 'main') return `伤害 +${12 * (s - 1)}%`;
   if (d.slot === 'sub') return `开局等级 LV${s >= 5 ? 3 : s >= 3 ? 2 : 1}`;
-  return '决定僚机类型';
+  return '开局自带 1 架';
 }
 function fighterEffect(id) { const s = save.fighters[id] || 1; return `伤害 +${6 * (s - 1)}% · 护甲 +${Math.floor((s - 1) / 2)}`; }
 // 本局结算：每过一关 +STAGE_REWARD，结束时按击毁数再给（每击毁 KILLS_PER_CRYSTAL 架 1 颗；原来按分数，分数系统取消后改成这样）
@@ -4751,13 +4886,12 @@ function drawSubFx() {
   ctx.globalCompositeOperation = 'lighter';
   for (const f of subFx) {
     if (f.type === 'skybolt') {
-      // 天雷：从屏幕外劈到目标的锯齿闪电 + 落点光圈
-      const a = 1 - f.t / .4; let q = f.seed; const r1 = () => (q = (q * 9301 + 49297) % 233280) / 233280;
-      ctx.beginPath(); let x = f.x + (r1() - .5) * 60, y = f.y - H; ctx.moveTo(x, y);
-      for (let i = 1; i <= 10; i++) { y = f.y - H + i * H / 10; x = i === 10 ? f.x : f.x + (r1() - .5) * 70 * (1 - i / 10); ctx.lineTo(x, y); }
-      ctx.strokeStyle = `rgba(255,240,150,${.45 * a})`; ctx.lineWidth = 16; ctx.stroke(); ctx.strokeStyle = `rgba(255,255,230,${.95 * a})`; ctx.lineWidth = 4; ctx.stroke();
-      drawGlow(f.x, f.y, 150, '255,230,120', .8 * a);
-      ctx.strokeStyle = `rgba(255,240,160,${.7 * a})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(f.x, f.y, 80 * (1.1 - a * .3), 0, TAU); ctx.stroke();
+      // 天雷：从屏幕上方劈到目标的粗闪电（多分叉、带回闪）+ 落点强光和冲击圈
+      const k = Math.max(0, 1 - f.t / .4), e = boltEnv(k), c = f.c || '150,165,255';
+      if (!f.sh) { f.sh = boltShape(H, 6, .09, 230); f.ox = rnd(-80, 80); }
+      strokeBolt(f.sh, f.x + f.ox, f.y - H, f.x, f.y, c, e, 2.2, k > .45);
+      drawGlow(f.x, f.y, 160, c, .75 * e); drawGlow(f.x, f.y, 50, '255,255,255', .9 * e);
+      ctx.strokeStyle = `rgba(${c},${.7 * k})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(f.x, f.y, 80 * (1.1 - k * .3), 0, TAU); ctx.stroke();
       continue;
     }
     if (f.type === 'pool') {
@@ -5396,6 +5530,22 @@ const ShipA = (() => {
     else if (fam === 'flame') glowR(g, 0, gy + 1, 6 + Math.random() * 2, '120,190,255', .9);
     else if (fam === 'wave') sym(s => glowR(g, s * 6, gy + 11, 5, cy, .7 + .3 * Math.sin(t * 6 + s)));
     else if (fam === 'laser') glowR(g, 0, gy, 7, cy, .8 + .2 * Math.sin(t * 8));
+    else if (fam === 'thunder') {
+      // 雷霆：放电点在机头；翼尖到机头的电弧贴着机体跳动，开火的瞬间两条都亮
+      const c = thunderCol(sk.key.split('/')[1]), q = clamp(1 - (time - thFlashT) / .16, 0, 1), fr = Math.floor(t * 20), hs = n => { const v = Math.sin(n * 127.1 + 31.7) * 43758.5453; return v - Math.floor(v); };
+      g.save(); g.globalCompositeOperation = 'lighter'; g.lineJoin = g.lineCap = 'round';
+      sym(s => {
+        const sd = fr * 7 + (s > 0 ? 3 : 0); if (q <= 0 && hs(sd) > .4) return;
+        const x0 = s * wx * .86, y0 = wy, N = 6; g.beginPath(); g.moveTo(x0, y0);
+        for (let i = 1; i < N; i++) { const u = i / N, o = (hs(sd + i * 1.7) - .5) * 9; g.lineTo(x0 - x0 * u + o * .6, y0 + (gy - y0) * u + o); }
+        g.lineTo(0, gy);
+        g.strokeStyle = `rgba(${c},${.25 + .4 * q})`; g.lineWidth = 3.4 / k; g.stroke();
+        g.strokeStyle = `rgba(255,255,255,${.55 + .4 * q})`; g.lineWidth = 1 / k; g.stroke();
+      });
+      g.restore();
+      sym(s => glowR(g, s * wx * .86, wy, 4, c, .5 + .4 * q));
+      glowR(g, 0, gy, 7 + 5 * q, c, .75 + .25 * q); glowR(g, 0, gy, 2.8 + 2 * q, '255,255,255', 1);
+    }
     glowR(g, -wx, wy, 6, '255,50,50', on ? 1 : .2); glowR(g, wx, wy, 6, '60,255,120', on ? 1 : .2);
     if (lv >= 4 && (t * 1.3) % 1 < .06) { glowR(g, -wx, wy + 3, 14, '255,255,255'); glowR(g, wx, wy + 3, 14, '255,255,255'); }
     // 受击判定核心（驾驶舱位置）
@@ -5413,6 +5563,7 @@ const ShipA = (() => {
       g.drawImage(cacheFor(look, lv, fam), B0.x0, B0.y0, BW, BH);
       over(g, t, look, core, lv, fam, k);
     },
+    geo(look, lv) { return plImg(look, lv); },   // 机体贴图的几何（机头 gy、翼尖 nav），雷霆的放电点用
     warm(id, fam = 'vulcan') { for (let lv = 1; lv <= 5; lv++) cacheFor(lookOf(id), lv, fam); },
   };
 })();
@@ -7332,20 +7483,8 @@ function render() {
       // 贴图粒子（新星冲击环、爆燃火焰、落雷星芒等）
       const img = fxGet(p.k, p.c);
       if (img) { const s = p.size * (p.g0 + (1 - f) * (p.g1 - p.g0)), ar = img.height / img.width; ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = Math.min(1, f * 1.8); ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.drawImage(img, -s / 2, -s * ar / 2, s, s * ar); ctx.restore(); ctx.globalAlpha = 1; }
-    } else if (p.t === 'bolt' && FX.lightning) {
-      // 闪电：手绘闪电贴图拉伸到两点之间，每帧随机左右翻转制造闪烁
-      ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = Math.min(1, f * 1.5);
-      const lt = fxGet('lightning', p.c); fxStrip(lt, p.x, p.y, p.x2, p.y2, 22 + Math.min(30, Math.hypot(p.x2 - p.x, p.y2 - p.y) * .06), Math.random() < .5);
-      ctx.globalAlpha = 1; drawGlow(p.x2, p.y2, 30, p.c, f);
     } else if (p.t === 'bolt') {
-      ctx.globalCompositeOperation = 'lighter';
-      const dx = p.x2 - p.x, dy = p.y2 - p.y, len = Math.hypot(dx, dy) || 1, nx = -dy / len, ny = dx / len, seg = Math.max(3, len / 22 | 0);
-      ctx.beginPath(); ctx.moveTo(p.x, p.y);
-      for (let i = 1; i < seg; i++) { const k = i / seg, o = rnd(-10, 10); ctx.lineTo(p.x + dx * k + nx * o, p.y + dy * k + ny * o); }
-      ctx.lineTo(p.x2, p.y2);
-      ctx.strokeStyle = `rgba(${p.c},${f * .8})`; ctx.lineWidth = 5; ctx.stroke();
-      ctx.strokeStyle = `rgba(255,255,255,${f})`; ctx.lineWidth = 1.6; ctx.stroke();
-      drawGlow(p.x2, p.y2, 30, p.c, f);
+      drawBoltPart(p, f);
     } else if (p.t === 'blood') {
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = `rgba(${p.c},${Math.min(1, f * 1.6)})`; ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (.5 + f * .5), 0, TAU); ctx.fill();
@@ -7547,12 +7686,14 @@ function drawChoice() {
   ctx.fillText(evo ? '武器进化 · 选择分支' : rare ? '首领奖励 · 选择强化' : '等级提升 · 选择强化', W / 2, evo ? 120 : 150);
   ctx.shadowBlur = 0;
   ctx.font = `14px ${FONT}`; ctx.fillStyle = '#9fe2ff';
-  ctx.fillText(evo ? `${WEAPONS[player.weapon].name} 已达 LV3，进化方向不可更改` : `机师等级 Lv.${player.plevel}` + (choiceQueue.length > 1 ? `   (待选 ${choiceQueue.length})` : ''), W / 2, evo ? 152 : 182);
+  ctx.fillText(evo ? `${WEAPONS[player.weapon].name} 已达 LV3，进化方向不可更改` : `机师等级 Lv.${player.plevel}` + (SURV ? `   强化 ${upKinds(player)}/${UP_KINDS} 种` : '') + (choiceQueue.length > 1 ? `   (待选 ${choiceQueue.length})` : ''), W / 2, evo ? 152 : 182);
   cardRects = [];
   const n = choices.length, top = evo ? 176 : 210, gap = n > 3 ? 112 : 124, ch = n > 3 ? 102 : 112;
   choices.forEach((u, i) => {
     const x = 24, y = top + i * gap, w = W - 48, h = ch, rc = RAR[u.rar].c, cur = player.ups[u.id] || 0;
     cardRects.push({ x, y, w, h });
+    const dk = clamp((time - choiceT - i * .09) / .22, 0, 1);   // 这张卡亮起的进度
+    ctx.save(); ctx.translate(0, (1 - dk) * (1 - dk) * 26);
     const pulse = .6 + .4 * Math.sin(time * 4 + i);
     ctx.fillStyle = 'rgba(10,26,48,.95)'; roundRect(x, y, w, h, 10); ctx.fill();
     ctx.strokeStyle = rc; ctx.lineWidth = 2; ctx.globalAlpha = .6 + .4 * pulse; ctx.stroke(); ctx.globalAlpha = 1;
@@ -7585,6 +7726,8 @@ function drawChoice() {
     ctx.textAlign = 'right'; ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.35)';
     ctx.fillText('[' + (i + 1) + ']', x + w - 12, y + 24);
     ctx.textAlign = 'center';
+    if (dk < 1) { ctx.fillStyle = `rgba(0,8,22,${(1 - dk) * .94})`; roundRect(x - 3, y - 3, w + 6, h + 6, 10); ctx.fill(); }
+    ctx.restore();
   });
   if (evo) { rerollRect = null; return; }
   rerollRect = { x: W / 2 - 80, y: 590, w: 160, h: 40 };
