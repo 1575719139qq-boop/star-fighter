@@ -1170,6 +1170,7 @@ function worldShift(dx, dy) {
   for (const f of ultFx) if (f.shift) f.shift(dx, dy);
   for (const w of player.wing) mv(w);
   if (player.rail) { player.rail.x += dx; player.rail.y0 += dy; }
+  if (player.decoy) mv(player.decoy);
   for (const s of stars) { const k = .3 + s.z * .5; s.x = ((s.x + dx * k) % W + W) % W; s.y = ((s.y + dy * k) % H + H) % H; }
   survBgX += dx * .25; survBgY += dy * .25;
 }
@@ -1220,6 +1221,8 @@ function survFrame(fn) {
     for (const w of P.wing) R(w, 'x', 'y', s);
     if (boss) { R(boss, 'x', 'y', s); for (const t of boss.turrets) V(t, 'dx', 'dy', s); }
     for (const bl of P.blades) { R(bl, 'x', 'y', s); for (const p of bl.trail) R(p, 0, 1, s); }
+    if (P.decoy) R(P.decoy, 'x', 'y', s);
+    if (P.wall) { R(P.wall, 'x1', 'y1', s); R(P.wall, 'x2', 'y2', s); }
   };
   const n = { b: pBullets.length, p: parts.length, t: texts.length, k: pickups.length, w: wrecks.length, s: stains.length, h: holes.length, f: subFx.length }, rail = P.rail;
   turn(-sn);
@@ -2889,8 +2892,9 @@ const WEAPON_IDS = Object.keys(WEAPONS);
 // 武器平衡系数（装备没有稀有度了，强弱靠这里拉平）
 const WEAPON_BAL = { vulcan: 1.3, laser: 1, thunder: .75, wave: .6, flame: 1.8 };
 const WING_BAL = { gun: 1, seeker: 1, lance: 1, scatter: 1.2, guard: 2, tesla: .4, rocket: 1, hole: 1, strike: 1 };
-// 副武器取消后僚机整体伤害 ×2.5：12 个种子对比，生存模式到第 12 波的等级 / 击毁 / 首领用时和有副武器时持平（不补的话首领用时翻倍）
-const WING_K = 2.5;
+// 伤害比例（2026-11-22）：主武器约六成、僚机约三成、专属约一成。僚机射速和主武器同一条曲线（前期弱、后期强）；
+// WING_K / MAIN_K 是两条线的整体系数，按 12 个种子对比调到和有副武器时持平（第 12 波首领用时、打不掉首领的局数）
+const WING_K = 2.4, MAIN_K = 1.3;   // MAIN_K：主武器整体伤害系数（2026-11-22 调伤害比例时加的，主武器约六成 / 僚机约三成 / 专属约一成）
 for (const id of WEAPON_IDS) UPGRADES.push({ id: 'main_' + id, name: '换装：' + WEAPONS[id].name, icon: WEAPONS[id].key, rar: 0, max: 999, noStack: true, color: WEAPONS[id].c,
   desc: WEAPONS[id].desc, apply: (s, p) => { p.weapon = id; }, cond: p => p.weapon !== id });
 UPGRADES.push(
@@ -2935,7 +2939,7 @@ const CASH = { id: 'cash', name: '能量补给', icon: '能', rar: 0, max: 999, 
 const UP_BY_ID = Object.fromEntries(UPGRADES.concat(CASH).map(u => [u.id, u]));
 // 每局最多带 UP_KINDS 种强化（主炮 / 维修 / 僚机支援不算——僚机卡顶替了原来的副武器卡，也不占名额）：带满以后只出已有的那几种，不能把所有强化都拿全。
 // 没有东西可选的升级，每级改给 SURPLUS_CRYSTAL 颗星晶
-const UP_KINDS = 8, SURPLUS_CRYSTAL = 5, WING_CARD_W = 3;
+const UP_KINDS = 8, SURPLUS_CRYSTAL = 5, WING_CARD_W = 2;
 const upKinds = P => Object.keys(P.ups).filter(id => P.ups[id] > 0 && id !== 'wing').length;
 // 选卡界面刚弹出的 CHOICE_LOCK 秒内不接受点击（卡片一张张亮起来）：连升好几级时不会一闪而过、误点下一轮
 const CHOICE_LOCK = .5;
@@ -3301,8 +3305,8 @@ function updatePlayer(dt) {
   wingFollow(dt);
   survFrame(() => {
   if (!hold) {
-    // 取消稀有度后按实测伤害拉平：每种主武器一个系数，只在开火的这一下乘到伤害上
-    const dm0 = S.dmgMul, ft0 = P.fireT; S.dmgMul = dm0 * (WEAPON_BAL[P.weapon] || 1); fireMain(dt, eff, rate); S.dmgMul = dm0;
+    // 取消稀有度后按实测伤害拉平：每种主武器一个系数，只在开火的这一下乘到伤害上；再乘主武器整体系数、主武器星级、专属技能的加成
+    const dm0 = S.dmgMul, ft0 = P.fireT; S.dmgMul = dm0 * (WEAPON_BAL[P.weapon] || 1) * MAIN_K * (P.mainMul || 1) * sigMainDmg(); fireMain(dt, eff, rate * sigMainRate()); S.dmgMul = dm0;
     if (P.weapon === 'laser') { if ((P.laserSnd = (P.laserSnd || 0) - dt) <= 0) { P.laserSnd = .2; sfxShot('laser'); } }
     else if (P.weapon !== 'flame' && P.fireT > ft0) sfxShot(P.weapon);   // 这一帧开了火
   }
@@ -3310,7 +3314,7 @@ function updatePlayer(dt) {
   // 僚机（最多 5 架：左右各两架呈 V 字，第 5 架在正后方）。全队都是机库装的那一种，没装就是机炮僚机；
   // 原来的副武器并进了僚机：导弹、激光、霰弹、雷球、震荡波，火箭 / 黑洞 / 轨道打击是三种新僚机
   const wt = P.wingType || 'gun', gd = wt === 'guard', rate0 = rate;
-  const wrate = SURV ? .45 + (S.aspd || 0) : rate0;   // 生存模式：僚机有自己的射速（不吃开局很低的攻速）
+  const wrate = SURV ? survRateK() : rate0;   // 僚机射速和主武器同一条曲线：开局低、靠攻速卡涨上去（前期弱、后期强，和原来的副武器一样）
   const dm = (P.wingDmg || 1) * S.dmgMul * WING_K * (WING_BAL[wt] || 1) * (P.syn.escort ? 1.5 : 1);   // 整体系数 × 各种僚机的平衡系数 × 机库星级
   P.orbs = [];
   P.wing.forEach((w, i) => {
@@ -3950,6 +3954,8 @@ function hurtPlayer(dmg = 1) {
   if (P.inv > 0 || P.dead || gm.god || DEMO) return;
   if (storm && phase === 'storm') storm.hits++;
   if (Math.random() < P.s.dodge) { P.inv = .5; floatText(P.x, P.y - 40, 'MISS', 16, '#bff6ff', .6); return; }
+  if (SKINS[curSkin].sig.id === 'blink' && sigOn() && !(P.blinkT > 0)) { sigBlink(); return; }   // 雷霆闪现：这一下闪开
+  if (P.blz) { if (P.blz > .05) floatText(P.x, P.y - 50, '炽燃熄灭', 13, '#ffb080', .8); P.blz = 0; P.blzMax = false; }   // 炽燃：被击中清零
   if (P.s.shield > 0) {
     P.s.shield--; P.inv = 1; tone(500, .2, 'sine', .07, 2);
     const rx = P.syn.reactive ? 240 : 60;   // 组合技「反应装甲」：破盾时清掉一大圈敌弹，并震伤贴身的敌机
@@ -4084,7 +4090,8 @@ function spawnDart(x, y) {
   const vy = 340, tt = Math.max(.6, (player.y - y) / vy);
   spawnEnemy('dart', x, y, { vy, vx: clamp((player.x - x) / tt * .8, -160, 160) });
 }
-function aimAt(x, y) { return Math.atan2(player.y - y, player.x - x); }
+// 敌人瞄准：暗影的「影子诱饵」在场时，离影子 420 以内的敌人改打影子
+function aimAt(x, y) { const d = player && player.decoy; if (d && (d.x - x) ** 2 + (d.y - y) ** 2 < 420 * 420) return Math.atan2(d.y - y, d.x - x); return Math.atan2(player.y - y, player.x - x); }
 // 敌弹最远飞多远：生存模式 420（敌人从四周来，打不中就很快消失），闯关模式 600（敌人在上方，要能飞到屏幕下半部）
 const EB_RANGE = () => SURV ? 420 : 600, EB_FADE = 90;
 function eShot(x, y, ang, spd, k = 'orange') { spd *= player.s.bulletSlow; eBullets.push({ x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, k, r: BUG_R[k] || (k === 'big' ? 8 : k === 'needle' ? 3.5 : 5) }); }
@@ -4563,7 +4570,8 @@ function drawDemoShade() {   // 主界面压暗：上面的标题和下面的按
 function startOverdrive() { odAdd(100, true); }   // （超载已换成必杀技；保留这个名字给 GM 面板用）
 function killEnemy(e) {
   const d = ETYPES[e.type], P = player, S = P.s;
-  if (e.burn > 0 && curSkin === 'crimson' && player.lv >= 3 && !player.dead) pyreBurst(e);
+  // 黄金收割：每击毁 20 个敌人主武器伤害 +2%
+  if (SKINS[curSkin].sig.id === 'harvest' && sigOn() && (P.hvN || 0) < 20 && (P.hvK = (P.hvK || 0) + 1) >= 20) { P.hvK = 0; P.hvN = (P.hvN || 0) + 1; floatText(P.x, P.y - 58, `主武器 +${Math.round(P.hvN * 2 * (P.sigK || 1))}%`, 13, '#ffd76a', .8); }
   if (e.type === 'burster') bursterBlast(e);
   // 分裂囊虫：死亡时裂出 3 只快速小虫
   if (e.type === 'splitter' && SURV) for (let i = 0; i < 3; i++) {
@@ -5166,13 +5174,13 @@ function drawGlow(x, y, size, rgb, a = 1) {
 // 每架机体锁定一种主武器（weapon），并有一个随等级解锁的专属技能（sig）。
 // ramp: 渐变映射色阶（null 为原色白陶瓷）；emis: 能量光色；flame/flame2: 尾焰；core: 驾驶舱（受击判定区）颜色
 const SKINS = {
-  silver: { name: '银翼', weapon: 'vulcan', sig: { id: 'aurora', unlock: 2, name: '极光天幕', desc: '翼端齐射追踪光针' }, ramp: null, emis: '70,225,255', flame: '40,140,255', flame2: '90,220,255', core: '255,60,145', acc2: '#bff0ff' },
-  crimson: { name: '赤焰', weapon: 'flame', sig: { id: 'pyre', unlock: 3, name: '爆燃', desc: '燃烧中的敌人死亡时爆炸并点燃周围' }, ramp: ['#1c0605', '#7a1610', '#c8382c', '#f07060'], emis: '255,200,60', flame: '255,100,30', flame2: '255,190,90', core: '50,235,255', acc2: '#fff0a8' },
-  phantom: { name: '暗影', weapon: 'wave', sig: { id: 'reaper', unlock: 3, name: '暗影双刃', desc: '两把回旋镰刃贯穿敌人、切碎子弹' }, ramp: ['#040407', '#1b1d2b', '#363a52', '#666c8c'], emis: '200,110,255', flame: '150,60,255', flame2: '210,140,255', core: '255,55,120', acc2: '#efd2ff' },
-  frost: { name: '霜蝎', weapon: 'thunder', hull: 'twin', sig: { id: 'frost', unlock: 2, name: '寒霜力场', desc: '周围敌机减速，靠近的敌弹被冻慢' }, ramp: ['#03101a', '#0f3a56', '#2f86b8', '#a8e4ff'], emis: '160,240,255', flame: '90,200,255', flame2: '200,250,255', core: '255,80,120', acc2: '#d8f8ff' },
-  owl: { name: '夜枭', weapon: 'vulcan', hull: 'delta', sig: { id: 'nova', unlock: 2, name: '相位新星', desc: '充能后敌弹贴身时自动爆发，清除周围弹幕' }, ramp: ['#070904', '#262e16', '#5a6a32', '#c8d498'], emis: '190,255,120', flame: '120,230,60', flame2: '210,255,150', core: '255,90,40', acc2: '#e8ffc0' },
-  storm: { name: '苍雷', weapon: 'thunder', hull: 'fsw', sig: { id: 'storm', unlock: 2, name: '苍穹落雷', desc: '周期性召唤落雷劈中最近的敌人' }, ramp: ['#03071a', '#122a6a', '#3a6ad8', '#dce6ff'], emis: '140,220,255', flame: '80,140,255', flame2: '180,220,255', core: '255,230,60', acc2: '#d8e8ff' },
-  gold: { name: '黄金', weapon: 'laser', sig: { id: 'rail', unlock: 3, name: '圣辉轨道炮', desc: '蓄能贯穿全屏，击退敌人、抹除弹幕' }, ramp: ['#1e1204', '#7a5212', '#c99a34', '#f4d680'], emis: '255,250,220', flame: '255,170,50', flame2: '255,230,150', core: '255,40,90', acc2: '#fff6c0' },
+  silver: { name: '银翼', weapon: 'vulcan', sig: { id: 'overclock', unlock: 3, name: '极光超频', desc: '每 12 秒主武器超频 4 秒，攻速 +60%' }, ramp: null, emis: '70,225,255', flame: '40,140,255', flame2: '90,220,255', core: '255,60,145', acc2: '#bff0ff' },
+  crimson: { name: '赤焰', weapon: 'flame', sig: { id: 'blaze', unlock: 3, name: '炽燃', desc: '不被击中时主武器伤害每秒 +3%，最多 +45%，被击中清零' }, ramp: ['#1c0605', '#7a1610', '#c8382c', '#f07060'], emis: '255,200,60', flame: '255,100,30', flame2: '255,190,90', core: '50,235,255', acc2: '#fff0a8' },
+  phantom: { name: '暗影', weapon: 'wave', sig: { id: 'decoy', unlock: 3, name: '影子诱饵', desc: '每 10 秒留下影子，附近敌人 3 秒内改打影子，影子消失时炸伤周围' }, ramp: ['#040407', '#1b1d2b', '#363a52', '#666c8c'], emis: '200,110,255', flame: '150,60,255', flame2: '210,140,255', core: '255,55,120', acc2: '#efd2ff' },
+  frost: { name: '霜蝎', weapon: 'thunder', hull: 'twin', sig: { id: 'icewall', unlock: 3, name: '冰霜壁垒', desc: '每 12 秒在机头前方立起冰墙，挡下打来的敌弹 5 秒' }, ramp: ['#03101a', '#0f3a56', '#2f86b8', '#a8e4ff'], emis: '160,240,255', flame: '90,200,255', flame2: '200,250,255', core: '255,80,120', acc2: '#d8f8ff' },
+  owl: { name: '夜枭', weapon: 'vulcan', hull: 'delta', sig: { id: 'reflect', unlock: 3, name: '相位反射', desc: '充能满后，贴身的敌弹被反弹回去打敌人' }, ramp: ['#070904', '#262e16', '#5a6a32', '#c8d498'], emis: '190,255,120', flame: '120,230,60', flame2: '210,255,150', core: '255,90,40', acc2: '#e8ffc0' },
+  storm: { name: '苍雷', weapon: 'thunder', hull: 'fsw', sig: { id: 'blink', unlock: 3, name: '雷霆闪现', desc: '每 10 秒一次，快被打中时自动闪到旁边躲开' }, ramp: ['#03071a', '#122a6a', '#3a6ad8', '#dce6ff'], emis: '140,220,255', flame: '80,140,255', flame2: '180,220,255', core: '255,230,60', acc2: '#d8e8ff' },
+  gold: { name: '黄金', weapon: 'laser', sig: { id: 'harvest', unlock: 3, name: '黄金收割', desc: '每击毁 20 个敌人，主武器伤害 +2%，整局有效，最多 +40%' }, ramp: ['#1e1204', '#7a5212', '#c99a34', '#f4d680'], emis: '255,250,220', flame: '255,170,50', flame2: '255,230,150', core: '255,40,90', acc2: '#fff6c0' },
 };
 // 进化涂装：选择进化分支后，机体整体换成该分支的配色
 const LIVERY = {
@@ -5252,7 +5260,8 @@ function applyLoadout(P) {
   if (!save.gear[L.main]) L.main = 'w:vulcan';
   const ws = gearStar(L.main);
   P.weapon = GEAR[L.main].id;
-  S.dmgMul += .06 * (fs - 1) + .12 * (ws - 1);
+  P.mainMul = 1 + .12 * (ws - 1);   // 主武器星级：只加主武器（原来加全局，僚机、专属也跟着涨）
+  P.sigK = 1 + .1 * (fs - 1);       // 战机星级：专属技能效果 +10% / 星（另外每 2 星护甲 +1）
   P.maxArmor += Math.floor((fs - 1) / 2); P.armor = P.maxArmor;
   P.lv = P.lastLv = 1;
   // 装备了僚机：开局自带 1 架（原来只决定类型，要抽到「僚机支援」卡才出现，装了等于摆设）；更多的靠局内升级卡，最多 5 架
@@ -5261,10 +5270,10 @@ function applyLoadout(P) {
 }
 function gearEffect(k) {
   const d = GEAR[k], s = gearStar(k);
-  if (d.slot === 'main') return `伤害 +${12 * (s - 1)}%`;
+  if (d.slot === 'main') return `主武器伤害 +${12 * (s - 1)}%`;
   return s > 1 ? `开局自带 1 架 · 伤害 +${10 * (s - 1)}%` : '开局自带 1 架';
 }
-function fighterEffect(id) { const s = save.fighters[id] || 1; return `伤害 +${6 * (s - 1)}% · 护甲 +${Math.floor((s - 1) / 2)}`; }
+function fighterEffect(id) { const s = save.fighters[id] || 1; return `专属技能 +${10 * (s - 1)}% · 护甲 +${Math.floor((s - 1) / 2)}`; }
 // 本局结算：每过一关 +STAGE_REWARD，结束时按击毁数再给（每击毁 KILLS_PER_CRYSTAL 架 1 颗；原来按分数，分数系统取消后改成这样）
 const KILLS_PER_CRYSTAL = 3;
 const tierK = t => 1 + .4 * t;   // 难度阶梯：每高一档，本局星晶 +40%
@@ -5715,7 +5724,7 @@ function drawHangar() {
       ctx.globalCompositeOperation = 'lighter'; drawGlow(mx, y + 48, 44, sk.emis, .45); ctx.globalCompositeOperation = 'source-over';
       drawGlyph('burst', mx, y + 48, 30, `rgb(${sk.emis})`);
       ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = `rgb(${sk.emis})`; ctx.fillText(sk.sig.name, mx, y + 82);
-      ctx.font = `10px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText(`火力 LV${sk.sig.unlock} 解锁`, mx, y + 99);
+      ctx.font = `10px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText(`机师 ${sk.sig.unlock} 级解锁`, mx, y + 99);
       continue;
     }
     const sl = f.sl, k = save.load[sl.id], d = k && GEAR[k];
@@ -5823,7 +5832,7 @@ function drawGacha() {
   if (gachaPool === 'f') {
     ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText(`战机 ${FIGHTER_RATE}%（7 架概率相同）  ·  装备 ${100 - FIGHTER_RATE}%`, W / 2, 448);
     ctx.font = `11px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText('十连至少 1 架战机', W / 2, 468);
-    ctx.fillText(`重复获得 → 升星（最高 5★，每星伤害 +6%）· 满星返还星晶 ${GRADE[FG].refund}`, W / 2, 486);
+    ctx.fillText(`重复获得 → 升星（最高 5★，每星专属技能 +10%）· 满星返还星晶 ${GRADE[FG].refund}`, W / 2, 486);
   } else {
     ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText(`共 ${all.length} 件装备，每件概率相同`, W / 2, 448);
     ctx.font = `11px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText('主武器 · 僚机', W / 2, 468);
@@ -6867,135 +6876,132 @@ function drawBurn(e) {
 }
 
 // ================= 机体专属武器 =================
+// 专属技能（2026-11-22 重做：和僚机、主武器自带特效 / 进化分支、局内卡都不重复）。
+// 机师等级到了就解锁（不再等主炮升级）；战机每升一星，效果 +10%（P.sigK，见 applyLoadout）
+const sigOn = () => { const P = player; return !!P && !P.dead && (SURV ? P.plevel : P.lv) >= SKINS[curSkin].sig.unlock; };
+// 专属技能对主武器的加成：炽燃 / 黄金收割加伤害，极光超频加攻速
+function sigMainDmg() { const P = player, id = SKINS[curSkin].sig.id; if (!sigOn()) return 1; if (id === 'blaze') return 1 + (P.blz || 0); if (id === 'harvest') return 1 + .02 * (P.hvN || 0) * (P.sigK || 1); return 1; }
+function sigMainRate() { const P = player; return SKINS[curSkin].sig.id === 'overclock' && P.sigOn > 0 && sigOn() ? 1 + .6 * (P.sigK || 1) : 1; }
 function fireSig(dt, rate) {
-  const P = player, S = P.s, sig = SKINS[curSkin].sig, K = SHIP_K, lv = P.lv;
-  if (P.rail) { P.rail.life -= dt; if (P.rail.life <= 0) P.rail = null; }
-  if (sig.id !== 'reaper' || lv < sig.unlock) P.blades = [];
-  // 专属技能随等级解锁
-  if (lv < sig.unlock) { P.sigReady = 0; P.sigCharge = 0; return; }
-  if (sig.id === 'aurora') {
-    // 极光天幕：翼端齐射追踪光针，等级越高越多（每侧 2→4 枚）
-    P.sigT -= dt * rate; P.sigReady = 1 - Math.max(0, P.sigT) / 2.6;
-    if (P.sigT <= 0) {
-      P.sigT = 2.6;
-      const n = Math.min(4, lv), ox = (lv >= 4 ? 57 : 50) * K, oy = (lv >= 4 ? 9 : 16) * K;
-      for (const s of [-1, 1]) for (let i = 0; i < n; i++) { const a = s * (1.05 + i * .28); pBullets.push({ x: P.x + s * ox, y: P.y + oy, vx: Math.sin(a) * 380, vy: -Math.cos(a) * 380, dmg: 3.2 * S.dmgMul, mis: true, needle: true, life: 2.4 }); }
-      tone(1200, .15, 'triangle', .05, 1.6);
+  const P = player, S = P.s, sig = SKINS[curSkin].sig, K = P.sigK || 1;
+  if (!sigOn()) { P.sigReady = 0; P.sigOn = 0; P.blz = 0; P.decoy = null; P.wall = null; return; }
+  if (sig.id === 'overclock') {
+    // 极光超频：每 12 秒主武器超频 4 秒（攻速 +60% × 星级），见 sigMainRate
+    if (P.sigOn > 0) { P.sigOn -= dt; P.sigReady = 1; if (P.sigOn <= 0) P.sigT = 12; }
+    else {
+      P.sigT = (P.sigT ?? 12) - dt; P.sigReady = 1 - Math.max(0, P.sigT) / 12;
+      if (P.sigT <= 0) { P.sigOn = 4; floatText(P.x, P.y - 60, '极光超频', 15, '#9ffff0', .9); tone(880, .12, 'triangle', .05); tone(1320, .2, 'triangle', .05, 0, .08); }
     }
-  } else if (sig.id === 'pyre') {
-    P.sigReady = 1;
-  } else if (sig.id === 'reaper') {
-    // 暗影双刃：两把镰刃沿 8 字回旋，贯穿敌人并切碎子弹，到顶点后可再次命中
-    P.sigT -= dt * rate; P.sigReady = P.blades.length ? 0 : 1 - Math.max(0, P.sigT) / 1.6;
-    if (P.sigT <= 0 && !P.blades.length) { P.sigT = 1.6; for (const s of [-1, 1]) P.blades.push({ s, t: 0, hits: new Set(), half: false, trail: [] }); tone(300, .25, 'sawtooth', .05, .4); }
-    const T = 1.35;
-    for (const bl of P.blades) {
-      bl.t += dt;
-      const ang = Math.min(1, bl.t / T) * TAU;
-      bl.x = P.x + bl.s * Math.sin(ang) * 115; bl.y = P.y - 20 - (1 - Math.cos(ang)) / 2 * 250; bl.rot = bl.t * 18 * bl.s;
-      bl.trail.unshift([bl.x, bl.y]); if (bl.trail.length > 9) bl.trail.pop();
-      if (!bl.half && bl.t > T / 2) { bl.half = true; bl.hits = new Set(); }
-      for (const t of targets()) if (!bl.hits.has(t.ref) && Math.hypot(t.x - bl.x, t.y - bl.y) < 22 + tReach(t)) { bl.hits.add(t.ref); applyHit(t, 7 * S.dmgMul, t.x, t.y, '200,110,255'); if (t.kind === 'e') push(t.ref, bl.s * 160, -60); }
-      for (const b of eBullets) if (!b.dead && (b.x - bl.x) ** 2 + (b.y - bl.y) ** 2 < 22 * 22) { b.dead = true; hitSpark(b.x, b.y, '200,110,255'); }
-    }
-    P.blades = P.blades.filter(bl => bl.t < T);
-  } else if (sig.id === 'rail') {
-    // 圣辉轨道炮：蓄能后贯穿全屏，击退敌机，抹除沿线敌弹，机体被后坐力推退
-    const need = 3.2;
-    P.sigCharge += dt * rate; P.sigReady = Math.min(1, P.sigCharge / need);
-    if (P.sigReady > .55 && Math.random() < .6) { const a = rnd(0, TAU), r = rnd(26, 46); addPart({ t: 'glow', x: P.x + Math.cos(a) * r, y: P.y - 50 + Math.sin(a) * r, vx: -Math.cos(a) * r * 4, vy: -Math.sin(a) * r * 4, life: .25, max: .25, size: 8, c: '255,225,130' }); }
-    if (P.sigCharge >= need) { P.sigCharge = 0; fireRail(); }
-  } else if (sig.id === 'storm') {
-    // 苍穹落雷：周期性从天而降，劈中离机体最近的几个目标
-    P.sigT -= dt * rate; P.sigReady = 1 - Math.max(0, P.sigT) / 2.2;
-    if (P.sigT <= 0) {
-      const ts = targets().filter(t => t.y > 0).sort((a, b) => Math.hypot(a.x - P.x, a.y - P.y) - Math.hypot(b.x - P.x, b.y - P.y)).slice(0, lv >= 5 ? 4 : lv >= 4 ? 3 : 2);
-      if (ts.length) {
-        P.sigT = 2.2;
-        for (const t of ts) { boltFx(t.x + rnd(-24, 24), -10, t.x, t.y, '150,215,255'); boltFx(t.x + rnd(-24, 24), -10, t.x, t.y, '220,240,255'); fxPart('flare', t.x, t.y, 90, .3, { c: '170,220,255', g0: .6 }); applyHit(t, 10 * S.dmgMul, t.x, t.y, '160,220,255'); addPart({ t: 'ring', x: t.x, y: t.y, vx: 0, vy: 0, life: .3, max: .3, size: 44, c: '160,220,255' }); }
-        tone(90, .3, 'sawtooth', .07, .2); noise(.25, .15, 2500);
+  } else if (sig.id === 'blaze') {
+    // 炽燃：不被击中时主武器伤害每秒 +3%，最多 +45%（× 星级）；被击中清零（见 hurtPlayer）
+    const mx = .45 * K; P.blz = Math.min(mx, (P.blz || 0) + .03 * K * dt); P.sigReady = P.blz / mx;
+    if (P.blz >= mx && !P.blzMax) { P.blzMax = true; floatText(P.x, P.y - 60, '炽燃全开', 15, '#ffb070', .9); tone(520, .25, 'sawtooth', .04, .5); }
+  } else if (sig.id === 'decoy') {
+    // 影子诱饵：每 10 秒在原地留下影子，附近的敌人 3 秒（× 星级）内改打影子（见 aimAt），碰到影子的敌弹被吸收；影子消失时炸伤周围
+    if (P.decoy) {
+      const d = P.decoy; d.t += dt; P.sigReady = 0;
+      for (const b of eBullets) if (!b.dead && (b.x - d.x) ** 2 + (b.y - d.y) ** 2 < 24 * 24) { b.dead = true; hitSpark(b.x, b.y, '190,120,255'); }
+      if (d.t >= 3 * K) {
+        for (const t of targets()) if (Math.hypot(t.x - d.x, t.y - d.y) < 95 + tReach(t)) applyHit(t, 14 * S.dmgMul * K, t.x, t.y, '190,120,255', .5);
+        addPart({ t: 'ring', x: d.x, y: d.y, vx: 0, vy: 0, life: .4, max: .4, size: 190, c: '190,120,255' }); fxPart('nova', d.x, d.y, 200, .4, { c: '170,100,255', g0: .3, g1: 1 });
+        tone(160, .3, 'sawtooth', .05, -.3); P.decoy = null; P.sigT = 10;
       }
+    } else {
+      P.sigT = (P.sigT ?? 4) - dt; P.sigReady = 1 - Math.max(0, P.sigT) / 10;
+      if (P.sigT <= 0) { P.decoy = { x: P.x, y: P.y, ang: SURV ? P.ang || 0 : 0, t: 0 }; tone(420, .15, 'triangle', .04, -.5); }
     }
-  } else if (sig.id === 'nova') {
-    // 相位新星：充能完毕后，敌弹贴近时自动爆发，清除周围弹幕并震开敌机
-    const need = 6; P.sigCharge = Math.min(need, P.sigCharge + dt * rate); P.sigReady = P.sigCharge / need;
-    if (P.sigCharge >= need && !P.dead) {
+  } else if (sig.id === 'icewall') {
+    // 冰霜壁垒：每 12 秒在机头前方立起冰墙，跟着机头走，挡下打来的敌弹（持续 5 秒 × 星级，挡 24 发会碎）；自己的子弹照常穿过
+    if (P.wall) {
+      const w = P.wall, wy = P.y - 86; w.t += dt; P.sigReady = 0;
+      w.x1 = P.x - 72; w.y1 = wy; w.x2 = P.x + 72; w.y2 = wy;   // 在"机头朝上"的坐标系里每帧重新摆到正前方
+      for (const b of eBullets) if (!b.dead && segDist(b.x, b.y, w.x1, w.y1, w.x2, w.y2) < 12) { b.dead = true; w.hp--; hitSpark(b.x, b.y, '190,235,255'); }
+      if (w.t >= w.life || w.hp <= 0) {
+        for (let k = 0; k < 16; k++) { const u = Math.random(), x = w.x1 + (w.x2 - w.x1) * u, y = w.y1 + (w.y2 - w.y1) * u, a = rnd(0, TAU), v = rnd(60, 200); addPart({ t: 'spark', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .45, max: .45, c: '200,240,255' }); }
+        tone(1500, .2, 'triangle', .04, -1); P.wall = null; P.sigT = 12;
+      }
+    } else {
+      P.sigT = (P.sigT ?? 3) - dt; P.sigReady = 1 - Math.max(0, P.sigT) / 12;
+      if (P.sigT <= 0) { const y = P.y - 86; P.wall = { x1: P.x - 72, y1: y, x2: P.x + 72, y2: y, t: 0, life: 5 * K, hp: 24 }; tone(700, .2, 'sine', .05, -.3); }
+    }
+  } else if (sig.id === 'reflect') {
+    // 相位反射：充能（6 秒，星级越高越快）满后，敌弹贴身时把周围的敌弹反弹回去，飞向最近的敌人
+    const need = 6 / K; P.sigCharge = Math.min(need, (P.sigCharge || 0) + dt); P.sigReady = P.sigCharge / need;
+    if (P.sigCharge >= need) {
       const h = hitPt();
-      if (eBullets.some(b => !b.dead && (b.x - h.x) ** 2 + (b.y - h.y) ** 2 < 55 * 55)) {
-        P.sigCharge = 0; const R = 150 + lv * 10;
-        for (const b of eBullets) if (!b.dead && (b.x - h.x) ** 2 + (b.y - h.y) ** 2 < R * R) { b.dead = true; hitSpark(b.x, b.y, '190,255,120'); }
-        for (const t of targets()) if (Math.hypot(t.x - h.x, t.y - h.y) < R + tReach(t)) { applyHit(t, 14 * S.dmgMul, t.x, t.y, '190,255,120'); if (t.kind === 'e') push(t.ref, (t.x - h.x) * 3, (t.y - h.y) * 3); }
-        addPart({ t: 'ring', x: h.x, y: h.y, vx: 0, vy: 0, life: .45, max: .45, size: R * 2, c: '190,255,120' });
-        fxPart('nova', h.x, h.y, R * 2.2, .5, { g0: .25, g1: 1 }); fxPart('flare', h.x, h.y, 120, .3, { c: '210,255,150' });
-        addPart({ t: 'glow', x: h.x, y: h.y, vx: 0, vy: 0, life: .35, max: .35, size: R * 1.6, c: '190,255,120' });
-        flash = Math.max(flash, .15); tone(220, .4, 'sawtooth', .07, 2);
+      if (eBullets.some(b => !b.dead && (b.x - h.x) ** 2 + (b.y - h.y) ** 2 < 60 * 60)) {
+        P.sigCharge = 0; const R = 160, tg = targets(); let n = 0;
+        for (const b of eBullets) {
+          if (b.dead || n >= 24 || (b.x - h.x) ** 2 + (b.y - h.y) ** 2 > R * R) continue;
+          b.dead = true; n++;
+          let best = null, bd = 1e12; for (const t of tg) { const q = (t.x - b.x) ** 2 + (t.y - b.y) ** 2; if (q < bd) { bd = q; best = t; } }
+          const a = best ? Math.atan2(best.x - b.x, -(best.y - b.y)) : Math.atan2(-(b.vx || 0), b.vy || 0);
+          pBullets.push(Object.assign(mkShot(b.x, b.y, a, 3 * S.dmgMul * K), { refl: true }));
+        }
+        addPart({ t: 'ring', x: h.x, y: h.y, vx: 0, vy: 0, life: .4, max: .4, size: R * 2, c: '200,160,255' }); fxPart('flare', h.x, h.y, 130, .3, { c: '220,190,255' });
+        flash = Math.max(flash, .08); tone(600, .25, 'triangle', .06, 1.5);
       }
     }
-  } else if (sig.id === 'frost') {
-    // 寒霜力场：周围的敌机减速，进入内圈的敌弹被冻慢一半
-    P.sigReady = 1; const R = 110 + lv * 10;
-    for (const e of enemies) if (e.hp > 0 && (e.x - P.x) ** 2 + (e.y - P.y) ** 2 < R * R) e.slow = Math.max(e.slow || 0, .15);
-    for (const b of eBullets) if (!b.frz && (b.x - P.x) ** 2 + (b.y - P.y) ** 2 < (R * .8) ** 2) { b.frz = true; b.vx *= .5; b.vy *= .5; }
+  } else if (sig.id === 'blink') {
+    // 雷霆闪现：冷却（10 秒，星级越高越短）好了以后，快被打中时自动闪开（见 hurtPlayer / sigBlink）
+    P.blinkT = Math.max(0, (P.blinkT || 0) - dt); P.sigReady = 1 - P.blinkT / (10 / K);
+  } else if (sig.id === 'harvest') {
+    // 黄金收割：每击毁 20 个敌人主武器伤害 +2%（× 星级），整局有效，最多 20 层（见 killEnemy）
+    P.sigReady = Math.min(1, (P.hvN || 0) / 20);
   }
 }
-function fireRail() {
-  const P = player, S = P.s, x = P.x, y0 = P.y - 50;
-  for (const t of lineTargets([[x, y0], [x, -40]], 18)) { applyHit(t, 45 * S.dmgMul, t.x, t.y, '255,230,140'); if (t.kind === 'e') push(t.ref, (t.ref.x - x) * 4, -480); }
-  for (const b of eBullets) {
-    if (b.dead || b.y > y0) continue;
-    const dx = b.x - x;
-    if (Math.abs(dx) < 18) { b.dead = true; hitSpark(b.x, b.y, '255,220,120'); }
-    else if (Math.abs(dx) < 60) b.vx += Math.sign(dx) * 220 * (1 - Math.abs(dx) / 60);
-  }
-  for (let y = y0; y > 0; y -= 26) addPart({ t: 'spark', x: x + rnd(-6, 6), y, vx: rnd(-160, 160), vy: rnd(-40, 40), life: .35, max: .35, c: '255,225,140' });
-  P.rail = { x, y0, life: .35 };
-  if (!SURV) P.y = Math.min(H - 40, P.y + 14); shake = Math.max(shake, 9); flash = Math.max(flash, .12);
-  noise(.5, .25, 3000); tone(70, .5, 'sawtooth', .1, .3);
+// 雷霆闪现：沿垂直于最近敌弹来向的方向闪开 72（生存模式里是整个世界反向平移），闪完 0.5 秒无敌
+function sigBlink() {
+  const P = player, K = P.sigK || 1, h = hitPt();
+  let vx = 0, vy = 0, bd = 1e12;
+  for (const b of eBullets) { if (b.dead) continue; const q = (b.x - h.x) ** 2 + (b.y - h.y) ** 2; if (q < bd) { bd = q; vx = b.vx || 0; vy = b.vy || 0; } }
+  let dx = -vy, dy = vx; const l = Math.hypot(dx, dy); if (l < 1e-3) { dx = 1; dy = 0; } else { dx /= l; dy /= l; }
+  if (Math.random() < .5) { dx = -dx; dy = -dy; }
+  const D = 72;
+  if (SURV) worldShift(-dx * D, -dy * D); else { P.x = clamp(P.x + dx * D, 20, W - 20); P.y = clamp(P.y + dy * D, 40, H - 40); }
+  boltFx(P.x - dx * D, P.y - dy * D, P.x, P.y, '150,215,255'); fxPart('flare', P.x, P.y, 90, .25, { c: '170,220,255' });
+  P.inv = Math.max(P.inv, .5); P.blinkT = 10 / K; tone(1200, .12, 'square', .04, -1);
+  floatText(P.x, P.y - 50, '闪现', 14, '#bfe6ff', .7);
 }
 function drawSig() {
-  const P = player, sk = SKINS[curSkin];
-  // 虚空镰刃
-  for (const bl of P.blades) {
-    bl.trail.forEach(([x, y], i) => drawGlow(x, y, 40 - i * 3, "150,60,255", .5 * (1 - i / bl.trail.length)));
-    // 暗影双刃：手绘暗影镰刃
-    if (FX.scythe) { ctx.save(); ctx.translate(bl.x, bl.y); ctx.rotate(bl.rot); ctx.globalCompositeOperation = 'lighter'; drawGlow(0, 0, 70, '160,70,255', .55); ctx.globalCompositeOperation = 'source-over'; ctx.drawImage(FX.scythe, -30, -31, 60, 62); ctx.restore(); continue; }
-    ctx.save(); ctx.translate(bl.x, bl.y); ctx.rotate(bl.rot);
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.beginPath(); ctx.arc(0, 0, 22, -2.4, .7); ctx.arc(6, -5, 16, .7, -2.4, true); ctx.closePath();
-    ctx.fillStyle = '#12061e'; ctx.fill();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(210,130,255,.95)'; ctx.lineWidth = 2.4; ctx.beginPath(); ctx.arc(0, 0, 22, -2.4, .7); ctx.stroke();
-    drawGlow(0, 0, 52, "160,70,255", .7);
-    ctx.restore();
-  }
+  const P = player, id = SKINS[curSkin].sig.id;
+  if (P.dead) return;
+  const on = sigOn();
   ctx.globalCompositeOperation = 'lighter';
-  // 轨道炮蓄能 + 射线
-  if (sk.sig.id === 'rail' && !P.dead) { const k = P.sigReady; ctx.save(); survShipXf(); drawGlow(P.x, P.y - 50, 8 + k * 36, '255,220,120', k * k * .9); ctx.restore(); }
-  if (P.rail && FX.beam) {
-    // 圣辉轨道炮：手绘光束贴图（金色），炮口金色星芒
-    const f = P.rail.life / .35, w = 70 * f, a = P.rail.ang || 0, tex = fxGet('beam', '255,215,110');
-    fxStrip(tex, P.rail.x, P.rail.y0, P.rail.x + Math.sin(a) * 1100, P.rail.y0 - Math.cos(a) * 1100, w);
-    const fl = fxGet('flare', '255,225,140'); if (fl) { const s = 150 * f + 40; ctx.save(); ctx.translate(P.rail.x, P.rail.y0); ctx.rotate(time * 5); ctx.drawImage(fl, -s / 2, -s / 2, s, s); ctx.restore(); }
-  } else if (P.rail && P.rail.ang !== undefined) {
-    // 生存模式：轨道炮沿开火时的机头方向画
-    const f = P.rail.life / .35, w = 24 * f;
-    ctx.save(); ctx.translate(P.rail.x, P.rail.y0); ctx.rotate(P.rail.ang);
-    ctx.fillStyle = `rgba(255,200,90,${.35 * f})`; ctx.fillRect(-w, -1000, w * 2, 1000);
-    ctx.fillStyle = `rgba(255,245,200,${.95 * f})`; ctx.fillRect(-w * .25, -1000, w * .5, 1000);
-    ctx.restore();
-    drawGlow(P.rail.x, P.rail.y0, 80 * f, '255,220,120', f);
-  } else if (P.rail) {
-    const f = P.rail.life / .35, w = 24 * f;
-    ctx.fillStyle = `rgba(255,200,90,${.35 * f})`; ctx.fillRect(P.rail.x - w, 0, w * 2, P.rail.y0);
-    ctx.fillStyle = `rgba(255,245,200,${.95 * f})`; ctx.fillRect(P.rail.x - w * .25, 0, w * .5, P.rail.y0);
-    drawGlow(P.rail.x, P.rail.y0, 80 * f, '255,220,120', f);
+  if (on && id === 'overclock' && P.sigOn > 0) {   // 极光超频：机身周围青绿、紫色的极光交替流转
+    const k = Math.min(1, P.sigOn * 2), a = time * 3;
+    for (let i = 0; i < 3; i++) { const ang = a + i * TAU / 3; drawGlow(P.x + Math.cos(ang) * 26, P.y + HIT_OY * .5 + Math.sin(ang) * 26, 46, i % 2 ? '200,140,255' : '110,255,220', .35 * k); }
+    drawGlow(P.x, P.y, 72, '120,255,230', .22 * k);
   }
-  // 寒霜力场：手绘冰晶光环，缓慢旋转、轻微呼吸
-  if (sk.sig.id === 'frost' && !P.dead && P.lv >= sk.sig.unlock && FX.frost) { const R = (110 + P.lv * 10) * (1 + Math.sin(time * 2) * .02); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .6; ctx.save(); ctx.translate(P.x, P.y); ctx.rotate(time * .25); ctx.drawImage(FX.frost, -R, -R, R * 2, R * 2); ctx.restore(); ctx.globalAlpha = 1; drawGlow(P.x, P.y, R * 1.1, '120,200,255', .08); }
-  else if (sk.sig.id === 'frost' && !P.dead && P.lv >= sk.sig.unlock) { const R = 110 + P.lv * 10; ctx.save(); ctx.setLineDash([4, 8]); ctx.lineDashOffset = time * 20; ctx.strokeStyle = 'rgba(170,235,255,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(P.x, P.y, R, 0, TAU); ctx.stroke(); ctx.restore(); drawGlow(P.x, P.y, R * 1.1, '120,200,255', .1); }
-  if (sk.sig.id === 'nova' && !P.dead && P.sigReady >= 1) drawGlow(P.x, P.y + HIT_OY, 50 + Math.sin(time * 6) * 6, '190,255,120', .35);
-  // 熔火喷流的炽热核心
-  if (sk.sig.id === 'inferno' && !P.dead) drawGlow(P.x, P.y - 52, 34 + Math.random() * 8, '255,150,40', .8);
+  if (on && id === 'blaze' && P.blz > .02) { const k = P.blz / (.45 * (P.sigK || 1)); drawGlow(P.x, P.y + 10, 40 + 42 * k, '255,120,40', .12 + .38 * k); drawGlow(P.x, P.y + 26, 26 + 20 * k, '255,200,90', .1 + .3 * k); }   // 炽燃：越烧越旺
+  if (on && id === 'harvest' && P.hvN > 0) { const k = P.hvN / 20; drawGlow(P.x, P.y, 50 + 32 * k, '255,210,90', .1 + .28 * k); }   // 黄金收割：层数越多金光越亮
+  if (on && id === 'reflect' && P.sigReady >= 1) drawGlow(P.x, P.y + HIT_OY, 50 + Math.sin(time * 6) * 6, '200,160,255', .35);   // 相位反射充能满
+  if (on && id === 'blink' && !(P.blinkT > 0)) drawGlow(P.x, P.y + HIT_OY, 38 + Math.sin(time * 8) * 4, '150,215,255', .28);   // 雷霆闪现就绪
+  // 影子诱饵：半透明的暗紫色影子，快消失时闪烁
+  if (P.decoy) {
+    const d = P.decoy, life = 3 * (P.sigK || 1), left = life - d.t, a = Math.min(1, d.t * 5) * (left < .6 ? .5 + .5 * Math.sin(time * 40) : 1);
+    drawGlow(d.x, d.y, 76, '150,70,255', .62 * a);
+    ctx.globalCompositeOperation = 'source-over'; ctx.save(); ctx.globalAlpha = .62 * a; ctx.translate(d.x, d.y); ctx.rotate(d.ang || 0);
+    drawPlayerShip(0, 0, 0, 1, time, curSkin, false, P.lv, P.branch[P.weapon], P.weapon); ctx.restore();
+    ctx.globalCompositeOperation = 'lighter';
+  }
+  // 冰霜壁垒：一排冰晶，出现 / 消失时淡入淡出，挨打多了变暗
+  if (P.wall) {
+    const w = P.wall, n = 9, fade = Math.min(1, w.t * 4) * Math.min(1, (w.life - w.t) * 2), hk = .45 + .55 * Math.max(0, w.hp) / 24;
+    const ang = Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
+    for (let i = 0; i < n; i++) { const u = (i + .5) / n; drawGlow(w.x1 + (w.x2 - w.x1) * u, w.y1 + (w.y2 - w.y1) * u, 34, '140,210,255', .32 * fade); }
+    ctx.globalCompositeOperation = 'source-over';
+    for (let i = 0; i < n; i++) {
+      const u = (i + .5) / n, x = w.x1 + (w.x2 - w.x1) * u, y = w.y1 + (w.y2 - w.y1) * u, s = 12 + (i * 7 % 3) * 3;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.globalAlpha = .9 * fade * hk;
+      const g = ctx.createLinearGradient(0, -s, 0, s); g.addColorStop(0, '#f4fcff'); g.addColorStop(.45, '#b4e2ff'); g.addColorStop(1, '#4f98d6');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, -s * 1.15); ctx.lineTo(s * .55, -s * .3); ctx.lineTo(s * .45, s * .8); ctx.lineTo(0, s); ctx.lineTo(-s * .5, s * .7); ctx.lineTo(-s * .6, -s * .35); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.beginPath(); ctx.moveTo(0, -s * 1.1); ctx.lineTo(s * .5, -s * .3); ctx.lineTo(0, -s * .1); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+  }
+  ctx.globalCompositeOperation = 'source-over';
 }
 // ================= 主武器：熔火喷流（赤焰专属） =================
 // 机头锥形火焰：等级越高射程越远、越宽、越烫；LV4 起两侧加装辅助喷嘴。点燃敌人持续灼烧
@@ -7074,15 +7080,6 @@ function drawFlameFx() {
     drawGlow(cx, cy - cones[0][3] * .5, cones[0][3] * 1.6, cols[0], .12);
   }
   ctx.globalCompositeOperation = "lighter";
-}
-// 专属技能「爆燃」：燃烧中的敌人死亡时爆炸，点燃并伤害周围敌人
-function pyreBurst(e) {
-  const S = player.s, rad = 55 + player.lv * 6;
-  addPart({ t: 'ring', x: e.x, y: e.y, vx: 0, vy: 0, life: .4, max: .4, size: rad, c: '255,140,40' });
-  fxPart('pyre', e.x, e.y, rad * 2.2, .5, { g0: .3, g1: 1 });
-  for (let i = 0; i < 10; i++) { const a = rnd(0, TAU), v = rnd(60, 200); addPart({ t: 'glow', x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .45, max: .45, size: rnd(14, 26), c: i % 2 ? '255,110,30' : '255,200,90' }); }
-  for (const o of enemies) if (o !== e && o.hp > 0 && Math.hypot(o.x - e.x, o.y - e.y) < rad + o.r) { o.burn = 3; o.burnLv = e.burnLv || player.lv; damageEnemy(o, 6 * S.dmgMul); }
-  blast(e.x, e.y, rad * 1.4, 260);
 }
 // ================= 灼烧：持续掉血 + 局部逐渐烧黑 =================
 const burnDps = lv => (4 + (lv || 1) * 2.5) * player.s.dmgMul;
@@ -8581,7 +8578,7 @@ function drawHUD() {
   // （连击只用来给分数加倍，随分数系统一起取消，不再显示）
 
   // 专属武器充能条
-  const sg = SKINS[curSkin], locked = player.lv < sg.sig.unlock;
+  const sg = SKINS[curSkin], locked = !sigOn();
   ctx.textAlign = 'center';   // （左下角的专属武器名字已删掉，只留充能条；下面武器格里的字都居中）
   ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(12, H - 67, 104, 3);
   ctx.fillStyle = player.sigReady >= 1 ? '#fff' : `rgb(${LOOK.emis})`; ctx.fillRect(12, H - 67, 104 * clamp(player.sigReady, 0, 1), 3);
