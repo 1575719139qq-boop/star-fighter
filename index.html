@@ -3308,61 +3308,100 @@ function shipPt(lx, ly) {
 // 机头放电点：离战机坐标的距离（像素，负数 = 朝前）/ 屏幕上的位置
 function shipNoseY() { const g = ShipA.geo(LOOK, player.lv); return g ? g.gy * SHIP_K : -40; }
 function shipNose() { return shipPt(0, shipNoseY() / SHIP_K); }
-// 闪电的形状：中点位移生成的折线（o[i] = 第 i 个节点离"两端连线"的垂直偏移，像素；u[i] = 沿连线的位置 0–1），
-// 外加几条分叉（br）和落点的小岔（st）。只记相对连线的偏移，所以两端移动（机头转向、目标移动、镜头滚动）时整道闪电跟着走
-function boltShape(len, forks = 0, rough = .2, brMax = 130) {
-  const disp = (m, amp) => { const q = new Array(m + 1).fill(0); for (let st = m; st > 1; st >>= 1, amp *= .55) for (let i = st >> 1; i < m; i += st) q[i] = (q[i - (st >> 1)] + q[i + (st >> 1)]) / 2 + rnd(-amp, amp); return q; };
-  const n = 1 << (len < 46 ? 2 : len < 120 ? 3 : len < 300 ? 4 : 5), o = disp(n, Math.min(44, len * rough));
-  const u = o.map((_, i) => i === 0 ? 0 : i === n ? 1 : (i + rnd(-.3, .3)) / n), br = [], st = [];
-  if (len > 70) for (let k = 0; k < forks; k++) { const L = Math.min(brMax, len * rnd(.14, .3)); br.push({ i: 1 + (Math.random() * n * .7 | 0), a: (Math.random() < .5 ? -1 : 1) * rnd(.3, .8), L, o: disp(L < 36 ? 4 : 8, L * .3) }); }
-  if (len > 50) for (let k = 0, m = 2 + (Math.random() * 2 | 0); k < m; k++) { const L = rnd(12, 26); st.push({ a: rnd(-2.4, 2.4), L, o: disp(2, L * .22) }); }
-  return { n, u, o, br, st, px: new Array(n + 1), py: new Array(n + 1) };
+// 闪电的形状：急转的锯齿折线——沿"两端连线"每 20–30 像素一个折点，相邻折点左右错开，两端收拢。
+// u[i] = 折点沿连线的位置 0–1，o[i] = 离连线的垂直偏移（像素）；另有几条分叉（br）和落点的小岔（st）。
+// 只记相对连线的偏移，所以两端移动时整道闪电跟着走
+function boltShape(len, forks = 0, rough = .14, brMax = 120) {
+  const zig = (L, amp, minN) => {
+    const n = Math.max(minN, Math.min(30, Math.round(L / rnd(20, 30)))), u = [0], o = [0]; let prev = 0;
+    for (let i = 1; i < n; i++) { const t = (i + rnd(-.32, .32)) / n; prev = prev * -.25 + rnd(-amp, amp); u.push(t); o.push(prev * Math.min(1, Math.sin(Math.PI * t) * 1.7)); }
+    u.push(1); o.push(0); return { n, u, o };
+  };
+  const m = zig(len, Math.min(26, len * rough), len < 46 ? 2 : 3), br = [], st = [];
+  if (len > 70) for (let k = 0; k < forks; k++) { const L = Math.min(brMax, len * rnd(.14, .3)), z = zig(L, L * .2, 2); br.push({ i: 1 + (Math.random() * (m.n - 1) * .75 | 0), a: (Math.random() < .5 ? -1 : 1) * rnd(.35, .8), L, n: z.n, u: z.u, o: z.o }); }
+  if (len > 50) for (let k = 0, q = 2 + (Math.random() * 2 | 0); k < q; k++) { const L = rnd(12, 26), z = zig(L, L * .22, 2); st.push({ i: m.n, a: rnd(-2.4, 2.4), L, n: z.n, u: z.u, o: z.o }); }
+  return { n: m.n, u: m.u, o: m.o, br, st, px: new Array(m.n + 1), py: new Array(m.n + 1) };
 }
-// 亮度随时间：先是一下最亮的主闪，暗一下，再回闪一次，然后熄灭（f = 剩余寿命比例 1 → 0）
-const boltEnv = f => f > .7 ? 1 : f > .52 ? .38 : f > .3 ? .82 : f / .3 * .82;
-// 画一道闪电：两层外晕 + 白热的芯（起点粗、末端细的带状多边形）+ 分叉。e = 亮度 0–1，w = 粗细倍率
-function strokeBolt(sh, x0, y0, x1, y1, c, e, w = 1, twigs = true) {
-  const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy); if (len < 2 || e <= 0) return;
+// 画一道闪电：两层外晕 + 白热的芯（起点粗、末端细的带状多边形）+ 分叉。
+// e = 亮度 0–1，w = 粗细倍率，g = 已经窜出去的比例（0–1，只画到前沿），jit = 每个折点的随机抖动（像素）。返回前沿的位置
+function strokeBolt(sh, x0, y0, x1, y1, c, e, w = 1, twigs = true, g = 1, jit = 0) {
+  const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy); if (len < 2 || e <= 0 || g <= 0) return null;
   const ux = dx / len, uy = dy / len, nx = -uy, ny = ux, n = sh.n, px = sh.px, py = sh.py;
-  for (let i = 0; i <= n; i++) { const t = sh.u[i] * len, o = sh.o[i]; px[i] = x0 + ux * t + nx * o; py[i] = y0 + uy * t + ny * o; }
-  const trunk = () => { ctx.beginPath(); ctx.moveTo(px[0], py[0]); for (let i = 1; i <= n; i++) ctx.lineTo(px[i], py[i]); };
+  for (let i = 0; i <= n; i++) { const t = sh.u[i] * len, o = sh.o[i] + (jit && i && i < n ? rnd(-jit, jit) : 0); px[i] = x0 + ux * t + nx * o; py[i] = y0 + uy * t + ny * o; }
+  let m = n, hx = px[n], hy = py[n];
+  if (g < 1) { m = 0; while (m < n - 1 && sh.u[m + 1] <= g) m++; const a = sh.u[m], b = sh.u[m + 1], q = clamp((g - a) / ((b - a) || 1), 0, 1); hx = px[m] + (px[m + 1] - px[m]) * q; hy = py[m] + (py[m + 1] - py[m]) * q; }
+  const trunk = () => { ctx.beginPath(); ctx.moveTo(px[0], py[0]); for (let i = 1; i <= m; i++) ctx.lineTo(px[i], py[i]); if (g < 1) ctx.lineTo(hx, hy); };
   ctx.lineJoin = ctx.lineCap = 'round';
   trunk();
   ctx.strokeStyle = `rgba(${c},${.13 * e})`; ctx.lineWidth = 17 * w; ctx.stroke();
   ctx.strokeStyle = `rgba(${c},${.4 * e})`; ctx.lineWidth = 7 * w; ctx.stroke();
   if (twigs && (sh.br.length || sh.st.length)) {
-    // 分叉：j0–j1 是这一段占整根的比例。整根画外晕，前六成画亮芯，后四成只剩一条暗的细线（越往梢越细越暗）
-    const tw = (bx, by, a, L, o, j0, j1) => { const c0 = Math.cos(a), s0 = Math.sin(a), tx = ux * c0 - uy * s0, ty = ux * s0 + uy * c0, m = o.length - 1, pt = j => { const t = j / m * L; return [bx + tx * t - ty * o[j], by + ty * t + tx * o[j]]; }; const a0 = Math.round(j0 * m), a1 = Math.round(j1 * m); if (a1 <= a0) return; ctx.moveTo(...pt(a0)); for (let j = a0 + 1; j <= a1; j++) ctx.lineTo(...pt(j)); };
-    const all = (j0, j1) => { ctx.beginPath(); for (const b of sh.br) tw(px[b.i], py[b.i], b.a, b.L, b.o, j0, j1); for (const s of sh.st) tw(px[n], py[n], s.a, s.L, s.o, j0, j1); };
+    // 分叉：前沿经过它的起点后才长出来；整根画外晕，前六成画亮芯，后四成只剩一条暗的细线
+    const tw = (b, j0, j1) => {
+      if (b.i > m || (g < 1 && b.i === n)) return; const gr = g < 1 ? clamp((g - sh.u[b.i]) / .22, 0, 1) : 1; if (gr <= 0) return;
+      const c0 = Math.cos(b.a), s0 = Math.sin(b.a), tx = ux * c0 - uy * s0, ty = ux * s0 + uy * c0, bx = px[b.i], by = py[b.i];
+      const pt = q => { let k = 0; while (k < b.n - 1 && b.u[k + 1] <= q) k++; const a = b.u[k], d = b.u[k + 1], r = clamp((q - a) / ((d - a) || 1), 0, 1), oo = b.o[k] + (b.o[k + 1] - b.o[k]) * r, t = q * b.L; return [bx + tx * t - ty * oo, by + ty * t + tx * oo]; };
+      const q0 = j0 * gr, q1 = j1 * gr; ctx.moveTo(...pt(q0)); for (let k = 1; k < b.n; k++) if (b.u[k] > q0 && b.u[k] < q1) ctx.lineTo(...pt(b.u[k])); ctx.lineTo(...pt(q1));
+    };
+    const all = (j0, j1) => { ctx.beginPath(); for (const b of sh.br) tw(b, j0, j1); for (const s of sh.st) tw(s, j0, j1); };
     all(0, 1); ctx.strokeStyle = `rgba(${c},${.24 * e})`; ctx.lineWidth = 4.5 * w; ctx.stroke();
     all(0, .6); ctx.strokeStyle = `rgba(255,255,255,${.85 * e})`; ctx.lineWidth = 1.4 * w; ctx.stroke();
     all(.6, 1); ctx.strokeStyle = `rgba(235,240,255,${.45 * e})`; ctx.lineWidth = .8 * w; ctx.stroke();
   }
-  const hw = i => (2.2 - 1.45 * sh.u[i]) * w;
+  const hw = u => (2.2 - 1.45 * u) * w;
   ctx.beginPath(); ctx.moveTo(px[0] + nx * hw(0), py[0] + ny * hw(0));
-  for (let i = 1; i <= n; i++) ctx.lineTo(px[i] + nx * hw(i), py[i] + ny * hw(i));
-  for (let i = n; i >= 0; i--) ctx.lineTo(px[i] - nx * hw(i), py[i] - ny * hw(i));
+  for (let i = 1; i <= m; i++) ctx.lineTo(px[i] + nx * hw(sh.u[i]), py[i] + ny * hw(sh.u[i]));
+  if (g < 1) ctx.lineTo(hx, hy);
+  for (let i = m; i >= 0; i--) ctx.lineTo(px[i] - nx * hw(sh.u[i]), py[i] - ny * hw(sh.u[i]));
   ctx.closePath(); ctx.fillStyle = `rgba(255,255,255,${.95 * e})`; ctx.fill();
   trunk(); ctx.strokeStyle = `rgba(255,255,255,${.9 * e})`; ctx.lineWidth = 1.1 * w; ctx.stroke();   // 再压一条细线，转折处不断
   ctx.lineJoin = 'miter'; ctx.lineCap = 'butt';
+  return [hx, hy];
 }
-// 闪电粒子：nose = 起点钉在机头；par / at = 从另一道闪电的某个位置分叉出来；tg = 终点跟着目标
+// 一道闪电从出手到消失的三段：a = 出手后过了多久，T = 总时长
+// ① 先导（很短）：从起点窜向目标，头部最亮；② 回击：整条通道猛地一亮、变粗；③ 余辉：变细变暗，微微抖动
+// 返回 true 表示还在前两段（这时两端还跟着机头 / 目标）
+function boltPhase(sh, x0, y0, x1, y1, c, w, a, T, big) {
+  const tL = Math.min(big ? .07 : .05, T * .28), tF = Math.min(big ? .1 : .065, T * .34), k0 = big ? 1.6 : 1;
+  if (a < tL) {
+    const h = strokeBolt(sh, x0, y0, x1, y1, c, .85, w * .7, true, Math.min(1, (a + 1 / 120) / tL));
+    if (h) { drawGlow(h[0], h[1], 40 * w * k0, c, .7); drawGlow(h[0], h[1], 20 * w * k0, '255,255,255', .95); }
+    return true;
+  }
+  if (a < tL + tF) {
+    const k = 1 - (a - tL) / tF;
+    strokeBolt(sh, x0, y0, x1, y1, c, 1, w * (1.2 + .55 * k), true, 1);
+    drawGlow(x1, y1, 62 * w * k0, c, .9); drawGlow(x1, y1, 24 * w * k0, '255,255,255', .95);
+    return true;
+  }
+  const k = Math.max(0, 1 - (a - tL - tF) / Math.max(.01, T - tL - tF));
+  strokeBolt(sh, x0, y0, x1, y1, c, k * k * .8, w * (.45 + .4 * k), k > .55, 1, 1.6);
+  drawGlow(x1, y1, 30 * w * k0, c, .5 * k);
+  return false;
+}
+// 闪电粒子：nose = 起点在机头；par / at = 从另一道闪电的某个位置分叉出来；tg = 终点是这个目标；delay = 晚一点才出手。
+// 前两段（先导、回击）两端跟着机头和目标；进入余辉就定格在原地，不再像皮筋一样被拉着走
 function drawBoltPart(p, f) {
+  const a = p.max - p.life - (p.delay || 0); if (a < 0) return;
   let x0 = p.x, y0 = p.y, x1 = p.x2, y1 = p.y2;
-  if (p.nose && !player.dead) { const q = shipNose(); x0 = q.x; y0 = q.y; }
-  else if (p.par && p.par.sh && p.par.sh.px[0] !== undefined) { const s = p.par.sh, i = Math.round(p.at * s.n); x0 = s.px[i]; y0 = s.py[i]; }
-  if (p.tg && tAlive(p.tg)) { const q = tPos(p.tg); x1 = p.x2 = q.x + (p.jx || 0); y1 = p.y2 = q.y + (p.jy || 0); }
+  if (!p.frozen) {
+    if (p.nose && !player.dead) { const q = shipNose(); x0 = q.x; y0 = q.y; }
+    else if (p.par && p.par.sh && p.par.sh.px[0] !== undefined) { const s = p.par.sh, i = Math.round(p.at * s.n); x0 = s.px[i]; y0 = s.py[i]; }
+    if (p.tg && tAlive(p.tg)) { const q = tPos(p.tg); x1 = q.x + (p.jx || 0); y1 = q.y + (p.jy || 0); }
+    p.x = x0; p.y = y0; p.x2 = x1; p.y2 = y1;
+  }
   const len = Math.hypot(x1 - x0, y1 - y0); if (len < 2) return;
   if (!p.sh) p.sh = boltShape(len, p.forks ?? (len > 150 ? 2 : len > 70 ? 1 : 0));
-  const e = boltEnv(f), w = p.w || clamp(len / 90, .5, 1);
+  const w = p.w || clamp(len / 90, .5, 1);
   ctx.globalCompositeOperation = 'lighter';
-  strokeBolt(p.sh, x0, y0, x1, y1, p.c, e, w, f > .5);
-  drawGlow(x1, y1, 34 * w, p.c, .85 * e); drawGlow(x1, y1, 11 * w, '255,255,255', .7 * e);
-  if (p.nose) { drawGlow(x0, y0, 26, p.c, .8 * e); drawGlow(x0, y0, 9, '255,255,255', .9 * e); }
+  const live = boltPhase(p.sh, x0, y0, x1, y1, p.c, w, a, p.dur || p.max, false);
+  if (!live) p.frozen = true;
+  else if (p.nose) { drawGlow(x0, y0, 30, p.c, .85); drawGlow(x0, y0, 10, '255,255,255', .95); }
 }
 function boltFx(x, y, x2, y2, c, o) {
-  const p = Object.assign({ t: 'bolt', x, y, x2, y2, vx: 0, vy: 0, life: .12, max: .12, c }, o); p.max = p.life;
-  addPart(p); return p;
+  const p = Object.assign({ t: 'bolt', x, y, x2, y2, vx: 0, vy: 0, life: .12, c, delay: 0 }, o);
+  p.dur = p.life; if (p.par) p.delay += p.at * Math.min(.05, p.dur * .28);   // 分叉：等主干的前沿窜到分叉点再出手
+  p.life = p.max = p.dur + p.delay; addPart(p); return p;
 }
 
 // ---------- 目标 / 光束工具 ----------
@@ -3566,11 +3605,12 @@ function fireThunder(eff, rate, br) {
     if (zap(t, dmg, col, br)) killed = true;
     if (net) {
       const seen = new Set([t.ref]); let frontier = [t], jumps = 4 + eff;
+      let hop = 0;
       while (frontier.length && jumps > 0) {
-        const next = [];
+        const next = []; hop++;
         for (const f of frontier) for (const o of all) {
           if (jumps <= 0 || seen.has(o.ref) || o.ref.hp <= 0) continue;
-          if (Math.hypot(o.x - f.x, o.y - f.y) < 150) { seen.add(o.ref); jumps--; boltFx(f.x, f.y, o.x, o.y, col, { life, tg: o, w: .7, forks: 0 }); if (zap(o, dmg * .7, col, br)) killed = true; next.push(o); }
+          if (Math.hypot(o.x - f.x, o.y - f.y) < 150) { seen.add(o.ref); jumps--; boltFx(f.x, f.y, o.x, o.y, col, { life, tg: o, w: .7, forks: 0, delay: hop * .035 }); if (zap(o, dmg * .7, col, br)) killed = true; next.push(o); }
         }
         frontier = next;
       }
@@ -5050,12 +5090,11 @@ function drawSubFx() {
   ctx.globalCompositeOperation = 'lighter';
   for (const f of subFx) {
     if (f.type === 'skybolt') {
-      // 天雷：从屏幕上方劈到目标的粗闪电（多分叉、带回闪）+ 落点强光和冲击圈
-      const k = Math.max(0, 1 - f.t / .4), e = boltEnv(k), c = f.c || '150,165,255';
+      // 天雷：先导从屏幕上方窜下来 → 整条一亮（落点强光 + 冲击圈）→ 余辉
+      const k = Math.max(0, 1 - f.t / .4), c = f.c || '150,165,255';
       if (!f.sh) { f.sh = boltShape(H, 6, .09, 230); f.ox = rnd(-80, 80); }
-      strokeBolt(f.sh, f.x + f.ox, f.y - H, f.x, f.y, c, e, 2.2, k > .45);
-      drawGlow(f.x, f.y, 160, c, .75 * e); drawGlow(f.x, f.y, 50, '255,255,255', .9 * e);
-      ctx.strokeStyle = `rgba(${c},${.7 * k})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(f.x, f.y, 80 * (1.1 - k * .3), 0, TAU); ctx.stroke();
+      boltPhase(f.sh, f.x + f.ox, f.y - H, f.x, f.y, c, 2.1, f.t, .4, true);
+      if (f.t > .07) { ctx.strokeStyle = `rgba(${c},${.7 * k})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(f.x, f.y, 80 * (1.1 - k * .3), 0, TAU); ctx.stroke(); }
       continue;
     }
     if (f.type === 'pool') {
@@ -6467,19 +6506,16 @@ function drawFlameFx() {
   const { cones, cols, lv, sputter, blue } = F;
   ctx.globalCompositeOperation = 'lighter';
   for (const [cx, cy, ang, rg, hf, w] of cones) {
-    const layers = [[1, cols[2], .35], [.72, cols[0], .55]];
-    if (lv >= 2) layers.push([.45, cols[1], .7]);
-    if (lv >= 3) layers.push([.22, blue ? '235,245,255' : '255,245,210', .85]);
+    const layers = [[1, cols[2], .3], [.72, cols[0], .5]];
+    if (lv >= 2) layers.push([.45, cols[1], .65]);
+    if (lv >= 3) layers.push([.22, blue ? '235,245,255' : '255,245,210', .8]);
     for (const [k, c, a] of layers) {
-      const L = rg * (.55 + .45 * k) * (1 + rnd(-.06, .06)), hw = Math.tan(hf * k) * L * .95 + 2;
-      const ex = cx + Math.cos(ang) * L, ey = cy + Math.sin(ang) * L, nx = -Math.sin(ang), ny = Math.cos(ang);
-      const g = ctx.createLinearGradient(cx, cy, ex, ey);
-      g.addColorStop(0, `rgba(${c},${a * sputter})`); g.addColorStop(.6, `rgba(${c},${a * .55 * sputter})`); g.addColorStop(1, `rgba(${c},0)`);
-      ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(cx + nx * 2, cy + ny * 2);
-      const steps = 6;
-      for (let i = 1; i <= steps; i++) { const f = i / steps, j = 1 + rnd(-.18, .18); ctx.lineTo(cx + Math.cos(ang) * L * f + nx * hw * f * j, cy + Math.sin(ang) * L * f + ny * hw * f * j); }
-      for (let i = steps; i >= 1; i--) { const f = i / steps, j = 1 + rnd(-.18, .18); ctx.lineTo(cx + Math.cos(ang) * L * f - nx * hw * f * j, cy + Math.sin(ang) * L * f - ny * hw * f * j); }
-      ctx.lineTo(cx - nx * 2, cy - ny * 2); ctx.closePath(); ctx.fill();
+      // 一团柔边的椭圆光（越靠喷口越亮，边缘渐隐到 0），长和宽随时间平缓起伏
+      const L = rg * (.34 + .34 * k) * (1 + .05 * Math.sin(time * 9 + k * 7)), hw = (Math.tan(hf * k) * L * .8 + 5) * (1 + .07 * Math.sin(time * 13 + k * 3));
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(ang); ctx.translate(L * .5, 0); ctx.scale(L * .5, hw);
+      const g = ctx.createRadialGradient(-.45, 0, 0, 0, 0, 1);
+      g.addColorStop(0, `rgba(${c},${a * sputter})`); g.addColorStop(.55, `rgba(${c},${a * .5 * sputter})`); g.addColorStop(1, `rgba(${c},0)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 1, 0, TAU); ctx.fill(); ctx.restore();
     }
     drawGlow(cx, cy, (14 + lv * 7) * (w > .9 ? 1 : .6), cols[1], .9 * sputter);
   }
