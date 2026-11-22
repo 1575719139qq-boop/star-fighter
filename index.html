@@ -1016,6 +1016,10 @@ let state = 'title', time = 0, best = 0;
 // DEMO：主界面背后的自动实战演示正在用这套游戏状态；demoSilent：演示正在更新（这期间不出声、不飘字、不存档）
 var DEMO = false, demo = null, demoSilent = false;
 function demoOn() { return DEMO && state === 'title'; }
+// 闯关模式暂时隐藏（2026-11-22 决定先不开发）：入口都关掉，代码全部保留。
+// 改成 true 就恢复：主界面的"闯关"按钮和 X 键，以及机库"出击"、主界面回车直接进闯关（关掉时这两个改为进生存模式）
+const STAGE_MODE_ON = false;
+function startDefault() { if (STAGE_MODE_ON) startGame(); else startSurvival(); }
 try { best = +localStorage.getItem('starFighterBest') || 0; } catch (e) { }
 let stage, score, dispScore, player, pBullets, eBullets, enemies, pickups, parts, texts, boss, holes = [], subFx = [];
 let phase, phaseT, spawnT, combo, comboT, odGauge, overdrive, shake, flash, redFlash, bonusLines;
@@ -3091,9 +3095,9 @@ addEventListener('keydown', e => {
   if (state === 'title' && sysOpen) { if (e.code === 'Escape') sysOpen = false; else if (e.code === 'KeyL') { sysOpen = false; state = 'codex'; } return; }
   if (state === 'title' && e.code === 'KeyL') { state = 'codex'; return; }
   if (state === 'title' && e.code === 'KeyV') { startSurvival(); return; }
-  if (state === 'title' && e.code === 'KeyX') { startGame(); return; }
+  if (STAGE_MODE_ON && state === 'title' && e.code === 'KeyX') { startGame(); return; }
   // （星球玩法已并入生存模式）
-  if (state === 'hangar') { if (hangarPick) { if (e.code === 'Escape') hangarPick = null; return; } if (e.code === 'Escape' || e.code === 'KeyH') state = 'title'; if (e.code === 'ArrowLeft') hangarAct('fprev'); if (e.code === 'ArrowRight') hangarAct('fnext'); if (e.code === 'KeyJ') state = 'gacha'; if (e.code === 'Enter') startGame(); return; }
+  if (state === 'hangar') { if (hangarPick) { if (e.code === 'Escape') hangarPick = null; return; } if (e.code === 'Escape' || e.code === 'KeyH') state = 'title'; if (e.code === 'ArrowLeft') hangarAct('fprev'); if (e.code === 'ArrowRight') hangarAct('fnext'); if (e.code === 'KeyJ') state = 'gacha'; if (e.code === 'Enter') startDefault(); return; }
   if (state === 'gacha') { if (gachaRes) { if (e.code === 'Escape' || e.code === 'Enter' || e.code === 'Space') gachaAct('resclose'); return; } if (e.code === 'Escape' || e.code === 'KeyJ') state = 'title'; if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') gachaPool = gachaPool === 'f' ? 'e' : 'f'; if (e.code === 'KeyH') state = 'hangar'; return; }
   if ((state === 'title' || state === 'over') && e.code === 'KeyH') { state = 'hangar'; hangarPick = null; return; }
   if ((state === 'title' || state === 'over') && e.code === 'KeyJ') { state = 'gacha'; return; }
@@ -3118,7 +3122,7 @@ addEventListener('keydown', e => {
     if (e.code === 'Digit3' || e.code === 'Numpad3') pickChoice(2);
     if (e.code === 'KeyR') reroll();
   }
-  if (e.code === 'Enter' && state === 'title') startGame();
+  if (e.code === 'Enter' && state === 'title') startDefault();
   else if (e.code === 'Enter' && state === 'over') restartRun();
   if (state === 'title' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) cycleSkin(e.code === 'ArrowLeft' ? -1 : 1);
 });
@@ -4441,7 +4445,7 @@ function drawUltCut() {
 // ================= 主界面实战演示 =================
 // 停在主界面时，背后自动打一局：当前选的战机（满级形态、随机一个进化分支、两种副武器），敌人从四周涌来，
 // 每 9 秒放一次必杀（带切入画面）。用的是同一套游戏状态，但：不出声、不飘字、不存档、不会受伤、不掉宝箱、没有首领和星球；
-// 存活时间钉在 100 秒（敌人种类和密度保持在中盘）。点"生存模式 / 闯关"开始真正的一局时整套状态会重置
+// 存活时间钉在 100 秒（敌人种类和密度保持在中盘）。开始真正的一局时整套状态会重置
 const DEMO_Z = 1.35, DEMO_Y = 372;
 const demoKey = () => [curSkin, save.load.main, save.load.sub, save.load.wing].join('|');
 function startDemo() {
@@ -5652,7 +5656,7 @@ function hangarAct(a) {
   else if (a === 'pickclose') hangarPick = null;
   else if (a === 'back') state = 'title';
   else if (a === 'gacha') state = 'gacha';
-  else if (a === 'go') startGame();
+  else if (a === 'go') startDefault();
 }
 
 // ---------- 抽卡界面 ----------
@@ -5705,7 +5709,7 @@ function drawGacha() {
     ctx.font = `900 18px ${FONT}`; ctx.fillStyle = ok ? '#fff' : 'rgba(255,255,255,.45)'; ctx.fillText(n === 1 ? '单 抽' : '十 连', x + 89, y + 21);
     gem(x + 66, y + 43, 6); ctx.font = `bold 13px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = ok ? '#bff4ff' : 'rgba(190,240,255,.45)'; ctx.fillText(String(c), x + 76, y + 43); ctx.textAlign = 'center';
   }
-  ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(190,230,255,.6)'; ctx.fillText(`星晶来源：每过一关 +${STAGE_REWARD}，每击毁 ${KILLS_PER_CRYSTAL} 架敌机 +1`, W / 2, 582);
+  ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(190,230,255,.6)'; ctx.fillText(`星晶来源：${STAGE_MODE_ON ? '每过一关' : '击破首领'} +${STAGE_REWARD}，每击毁 ${KILLS_PER_CRYSTAL} 架敌机 +1`, W / 2, 582);
   uiBtn(10, H - 58, 78, 40, '返回', 'back');
   uiBtn(96, H - 58, 110, 40, '机库 [H]', 'hangar');
   if (gachaMsgT > 0) { ctx.globalAlpha = Math.min(1, gachaMsgT * 2); ctx.fillStyle = 'rgba(60,10,20,.92)'; roundRect(W / 2 - 120, 610, 240, 34, 8); ctx.fill(); ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#ffb0b8'; ctx.fillText(gachaMsg, W / 2, 628); ctx.globalAlpha = 1; }
@@ -5768,7 +5772,7 @@ function titleAct(a) {
   if (a === 'hangar') { state = 'hangar'; hangarPick = null; }
   else if (a === 'gacha') state = 'gacha';
   else if (a === 'codex') state = 'codex';
-  else if (a === 'normal') startGame();
+  else if (a === 'normal' && STAGE_MODE_ON) startGame();
   else if (a === 'fprev' || a === 'fnext') cycleSkin(a === 'fnext' ? 1 : -1);
   else if (a === 'home') state = 'title';
   else if (a === 'restart') restartRun();
@@ -8697,12 +8701,12 @@ function drawTitle() {
     techBox(W / 2 + s * 120 - 17, 474, 34, 34);
     ctx.fillStyle = '#bff0ff'; ctx.beginPath(); ctx.moveTo(W / 2 + s * 120 + s * 6, 491); ctx.lineTo(W / 2 + s * 120 - s * 5, 483); ctx.lineTo(W / 2 + s * 120 - s * 5, 499); ctx.closePath(); ctx.fill();
   }
-  // 主按钮：生存模式在正中下方；左边抽卡，右边机库 / 星图 / 闯关模式
+  // 主按钮：生存模式在正中下方；左边抽卡，右边机库 / 星图（闯关模式暂时隐藏，见 STAGE_MODE_ON）
   uiBtn(W / 2 - 130, 572, 260, 52, '生存模式 [V]', 'surv', { fill: 'rgba(15,95,75,.92)', stroke: '#8fffd0', fs: 18 });
   sideBtn(10, 236, 'gem', '抽卡', 'J', 'gacha', '255,200,110');
   sideBtn(W - 74, 196, 'squad', '机库', 'H', 'hangar', '120,210,255');
   sideBtn(W - 74, 282, 'planet', '星图', 'S', 'starmap', '150,180,255');
-  sideBtn(W - 74, 368, 'sword', '闯关', 'X', 'normal', '255,150,120');
+  if (STAGE_MODE_ON) sideBtn(W - 74, 368, 'sword', '闯关', 'X', 'normal', '255,150,120');
   if (sysOpen) drawSysMenu();
 }
 
@@ -8771,7 +8775,7 @@ document.head.appendChild(gmStyle);
 function syncGMSkin() { const el = gmEl.querySelector('[data-skin]'); if (el) el.value = curSkin; }
 syncGMSkin();
 function toggleGM() { gm.open = !gm.open; gmEl.classList.toggle('open', gm.open); syncGM(); }
-function ensureGame() { if (!player || state === 'title' || state === 'over') startGame(); }
+function ensureGame() { if (!player || state === 'title' || state === 'over') startDefault(); }
 function syncGM() {
   if (!player) return;
   gmEl.querySelector('[data-weapon]').value = player.weapon;
