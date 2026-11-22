@@ -1270,6 +1270,7 @@ function survWaveStep(dt) {
     if (t && t.def && w.n >= t.def.winWave) { defenseWon(t); return; }   // 守住了，通关
     const up = survLevelFloor(w.n + 1);
     w.on = false; w.t = SURV_WAVE_OFF; floatText(W / 2, 96, up ? `第 ${w.n} 波结束 · 等级 +${up}` : `第 ${w.n} 波结束`, 16, '#9fe8ff', 1.6); tone(523, .15, 'triangle', .05); tone(784, .2, 'triangle', .05, 0, .12);
+    if (w.n % 5 === 0) gainMat(2, 1);   // 每撑过 5 波给 1 个星核
     if (w.n >= SURV_WAVES && !(t && t.def)) { startDoom(false); return; }   // 一直没打掉核心：撑过第 20 波也来终结潮
   }
   else { w.n++; w.on = true; w.t = SURV_WAVE_ON(w.n); floatText(W / 2, 96, `第 ${w.n} 波`, 20, '#ffd28a', 1.8); tone(330, .2, 'sawtooth', .04); tone(440, .25, 'sawtooth', .04, 0, .15); }
@@ -1797,6 +1798,7 @@ function defenseLost(p) {
 function planetCaptured(p) {
   if (p.owned) return;
   p.owned = true; p.inOrbit = false; planetOwned++;
+  gainMat(2, 1);   // 占领星球给 1 个星核
   flash = .5; sfxWin();
   const P = player, took = survT - p.bornT, hold = survT - Math.max(0, p.orbitT0);
   const stars = [{ n: '守护成功', ok: true }, { n: '无伤', ok: !p.hurt }, { n: '基地完好', sub: '指挥中心剩 60% 以上', ok: (p.defHubK ?? 1) >= .6 }];
@@ -3200,7 +3202,7 @@ addEventListener('keydown', e => {
   if (STAGE_MODE_ON && state === 'title' && e.code === 'KeyX') { startGame(); return; }
   // （星球玩法已并入生存模式）
   if (state === 'hangar') { if (hangarPick) { if (e.code === 'Escape') hangarPick = null; return; } if (e.code === 'Escape' || e.code === 'KeyH') state = 'title'; if (e.code === 'ArrowLeft') hangarAct('fprev'); if (e.code === 'ArrowRight') hangarAct('fnext'); if (e.code === 'KeyJ') state = 'gacha'; if (e.code === 'Enter') startDefault(); return; }
-  if (state === 'gacha') { if (gachaRes) { if (e.code === 'Escape' || e.code === 'Enter' || e.code === 'Space') gachaAct('resclose'); return; } if (e.code === 'Escape' || e.code === 'KeyJ') state = 'title'; if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') { const o = ['f', 'e', 'c']; gachaPool = o[(o.indexOf(gachaPool) + (e.code === 'ArrowRight' ? 1 : 2)) % 3]; } if (e.code === 'KeyH') state = 'hangar'; return; }
+  if (state === 'gacha') { if (gachaRes) { if (e.code === 'Escape' || e.code === 'Enter' || e.code === 'Space') gachaAct('resclose'); return; } if (e.code === 'Escape' || e.code === 'KeyJ') state = 'title'; if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') gachaPool = gachaPool === 'f' ? 'c' : 'f'; if (e.code === 'KeyH') state = 'hangar'; return; }
   if ((state === 'title' || state === 'over') && e.code === 'KeyH') { state = 'hangar'; hangarPick = null; return; }
   if ((state === 'title' || state === 'over') && e.code === 'KeyJ') { state = 'gacha'; return; }
   if (state === 'over' && e.code === 'Escape') { state = 'title'; return; }
@@ -5308,10 +5310,10 @@ const GEAR = {};
 });
 const FIGHTER_G = { silver: FG, crimson: FG, phantom: FG, frost: FG, owl: FG, gold: FG, storm: FG };
 // 战机补给：每抽 FIGHTER_RATE 概率出战机（7 架概率相同），其余出 R 级装备；十连至少 1 架战机
-const FIGHTER_RATE = 40;
+// 2026-11-22：两个卡池合成一个「星穹补给」：战机设计图 20% · 装备设计图 30% · 材料 50%；十连至少 1 张战机设计图
+const FIGHTER_RATE = 20, GEAR_RATE = 30, MAT_PULL = [[0, 8, 60], [1, 3, 30], [2, 1, 10]];   // 抽到材料：[材料, 数量, 概率%]：合金 ×8 / 能量核 ×3 / 星核 ×1
 const POOLS = {
-  f: { name: '战机补给', rates: [55, 35, 10], items: () => [...Object.keys(FIGHTER_G).map(id => ({ kind: 'f', id, g: FG })), ...Object.values(GEAR).filter(d => d.g === 0).map(d => ({ kind: 'e', id: d.key, g: 0 }))] },
-  e: { name: '装备补给', rates: [60, 32, 8], items: () => Object.values(GEAR).map(d => ({ kind: 'e', id: d.key, g: d.g })) },
+  f: { name: '星穹补给', rates: [0, 0, 0], items: () => [...Object.keys(FIGHTER_G).map(id => ({ kind: 'f', id, g: FG })), ...Object.values(GEAR).map(d => ({ kind: 'e', id: d.key, g: 0 }))] },
 };
 const PITY = 50, PULL_COST = 100, TEN_COST = 900, STAGE_REWARD = 100;   // 2026-11-21 星晶产出整体下调约 35%
 const IN_RUN = { play: 1, paused: 1, choose: 1, chest: 1, over: 1 };
@@ -5366,6 +5368,7 @@ const RECIPE = { f: [75, 24, 4], e: [38, 12, 2] };   // 合成一架战机 / 一
 const MAT_NORM = .003, MAT_ELITE = .5, MAT_CHAMP = .008;   // 小怪掉合金；精英 / 冠军掉能量核；首领必掉 1 个星核（一局约 1.7 万小怪、900 冠军、17 精英、1–2 首领）
 const bpKey = it => it.kind === 'f' ? 'f:' + it.id : it.id;
 function drawMatIcon(m, x, y, s) { const im = TITLE_IMG['imat' + m]; if (im) ctx.drawImage(im, x - s / 2, y - s / 2, s, s); else { ctx.fillStyle = `rgb(${MATS[m].c})`; ctx.beginPath(); ctx.arc(x, y, s * .35, 0, TAU); ctx.fill(); } }
+function gainMat(m, n) { if (DEMO || !SURV) return; save.mat[m] += n; if (player.matGot) player.matGot[m] += n; persist(); tone(1100, .15, 'triangle', .05); floatText(player.x, player.y - 76, `${MATS[m].name} +${n}`, 16, `rgb(${MATS[m].c})`, 1.4); }   // 直接入账（不用捡）
 function dropMat(x, y, m) { if (DEMO || !SURV) return; pickups.push({ x, y, k: 'Q', m, v: 1, t: 0, vy: 0, pull: m === 2 || !!survDoom }); }   // 星核、终结潮里掉的材料：掉下来直接飞向玩家
 function drawMatPickup(p) { const bob = Math.sin(p.t * 4) * 2, s = p.m === 2 ? 34 : 26; ctx.globalCompositeOperation = 'lighter'; drawGlow(p.x, p.y + bob, s * 2.2, MATS[p.m].c, .55); ctx.globalCompositeOperation = 'source-over'; drawMatIcon(p.m, p.x, p.y + bob, s); }
 // 一排材料（图标 + 数字）：o.plus 显示 +n；o.need 显示 有/要，不够的标红；o.left 给了就从左边排起，否则居中
@@ -5384,13 +5387,14 @@ function doPull(pool, n) {
   const cost = n === 10 ? TEN_COST : PULL_COST * n, free = n === 10 && (save.freeTen || 0) > 0;   // 免费十连券（新玩家送一张）
   if (!free && save.crystals < cost) { gachaMsg = '星晶不足 · 去关卡里赚吧'; gachaMsgOk = false; gachaMsgT = 1.8; tone(180, .2, 'square', .05); return; }
   if (free) save.freeTen--; else save.crystals -= cost;
-  const PL = POOLS[pool], all = PL.items(), out = [];
+  const all = POOLS.f.items(), out = [];
   for (let i = 0; i < n; i++) {
-    let g;
-    if (pool === 'f') {
-      // 战机补给：战机不分稀有度，没有 SSR 保底
-      g = Math.random() * 100 < FIGHTER_RATE || (n === 10 && i === n - 1 && !out.some(o => o.kind === 'f')) ? FG : 0;
-    } else g = 0;   // 装备补给：每件装备概率相同，没有稀有度和保底
+    const r = Math.random() * 100, mustF = n === 10 && i === n - 1 && !out.some(o => o.kind === 'f');   // 十连保底 1 张战机设计图
+    if (!mustF && r >= FIGHTER_RATE + GEAR_RATE) {   // 材料
+      let q = Math.random() * 100, pk = MAT_PULL[0]; for (const e of MAT_PULL) if ((q -= e[2]) < 0) { pk = e; break; }
+      save.mat[pk[0]] += pk[1]; out.push({ kind: 'm', id: MATS[pk[0]].id, m: pk[0], amt: pk[1], g: 0 }); continue;
+    }
+    const g = mustF || r < FIGHTER_RATE ? FG : 0;   // 战机、装备都不分稀有度，同类里每个概率相同
     const cand = all.filter(it => it.g === g), it = Object.assign({}, cand[Math.random() * cand.length | 0]);
     // 2026-11-22：还没合成的只给设计图（在「合成」里用材料造出来）；已经有的照旧升星，满星返还星晶
     const book = it.kind === 'f' ? save.fighters : save.gear, cur = book[it.id] || 0, bk = bpKey(it);
@@ -5627,12 +5631,13 @@ function emblem(g, k, x, y, r, dim, t = 0) {
 
 // ---------- 卡面：静态部分预渲染，SSR / SR 叠加实时流光 ----------
 const CARD_CACHE = {}, CARD_NY = .66;
-const cardName = it => it.kind === 'f' ? SKINS[it.id].name : GEAR[it.id].name;
-const cardSub = it => it.kind === 'f' ? '战机 · ' + SKINS[it.id].sig.name : SLOTS.find(s => s.id === GEAR[it.id].slot).n;
-const itemColor = it => it.kind === 'f' ? SKINS[it.id].emis : GEAR[it.id].c;
+const MAT_G = { n: '材料', c: '#ffd27a', rgb: '255,210,122' };
+const cardName = it => it.kind === 'f' ? SKINS[it.id].name : it.kind === 'm' ? MATS[it.m].name : GEAR[it.id].name;
+const cardSub = it => it.kind === 'm' ? '合成材料' : it.kind === 'f' ? '战机 · ' + SKINS[it.id].sig.name : SLOTS.find(s => s.id === GEAR[it.id].slot).n;
+const itemColor = it => it.kind === 'f' ? SKINS[it.id].emis : it.kind === 'm' ? MATS[it.m].c : GEAR[it.id].c;
 function chamfer(g, x, y, w, h, c) { g.beginPath(); g.moveTo(x + c, y); g.lineTo(x + w, y); g.lineTo(x + w, y + h - c); g.lineTo(x + w - c, y + h); g.lineTo(x, y + h); g.lineTo(x, y + c); g.closePath(); }
 function paintCard(g, it, w, h) {
-  const G = GRADE[it.g], col = itemColor(it), u = w / 72, c = Math.round(w * .13), ax = w / 2, ay = h * .37, ny = h * CARD_NY;
+  const G = it.kind === 'm' ? MAT_G : GRADE[it.g], col = itemColor(it), u = w / 72, c = Math.round(w * .13), ax = w / 2, ay = h * .37, ny = h * CARD_NY;
   chamfer(g, 0, 0, w, h, c); g.save(); g.clip();
   g.fillStyle = '#060c17'; g.fillRect(0, 0, w, h);
   let gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, `rgba(${G.rgb},.10)`); gr.addColorStop(.55, 'rgba(10,20,36,0)'); gr.addColorStop(1, `rgba(${G.rgb},.35)`); g.fillStyle = gr; g.fillRect(0, 0, w, h);
@@ -5647,6 +5652,7 @@ function paintCard(g, it, w, h) {
   g.globalCompositeOperation = 'source-over';
   // 画面主体
   if (it.kind === 'f') { const k = w * .78 / 95; g.save(); g.translate(ax, ay + 4 * u); g.scale(k * .72 * shipScale(5), k * .72 * shipScale(5)); ShipA.draw(g, 1.3, lookOf(it.id), true, 5, 'vulcan', k); g.restore(); }
+  else if (it.kind === 'm') { const im = TITLE_IMG['imat' + it.m]; if (im) g.drawImage(im, ax - w * .3, ay - w * .3, w * .6, w * .6); }
   else emblem(g, it.id, ax, ay, w * .3, false, 1.3);
   // 铭牌
   g.fillStyle = 'rgba(3,6,12,.86)'; g.fillRect(0, ny, w, h - ny);
@@ -5905,7 +5911,7 @@ function drawGacha() {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.font = `900 24px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('星穹补给', W / 2, 30);
   drawCrystals(W - 12, 30);
-  for (const [i, k, nm] of [[0, 'f', POOLS.f.name], [1, 'e', POOLS.e.name], [2, 'c', '合成']]) uiBtn(10 + i * 131, 54, 125, 36, nm, 'p' + k, gachaPool === k ? { fill: 'rgba(40,130,200,.75)', stroke: '#9fe8ff' } : { tint: 'steel', color: '#c9d6e2' });
+  for (const [i, k, nm] of [[0, 'f', POOLS.f.name], [1, 'c', '合成']]) uiBtn(10 + i * 196, 54, 189, 36, nm, 'p' + k, gachaPool === k ? { fill: 'rgba(40,130,200,.75)', stroke: '#9fe8ff' } : { tint: 'steel', color: '#c9d6e2' });
   if (gachaPool === 'c') drawCraft(); else {
   const PL = POOLS[gachaPool], all = PL.items().filter(it => it.kind === (gachaPool === 'f' ? 'f' : 'e')), book = gachaPool === 'f' ? save.fighters : save.gear;
   panel(10, 100, W - 20, 330);
@@ -5920,7 +5926,7 @@ function drawGacha() {
     else { drawGearIcon(it.id, x, y - 8 + Math.sin(time * 2 + i) * 2, 22); ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = GRADE[0].c; ctx.fillText(GEAR[it.id].name, x, y + 30); ctx.font = `9px ${FONT}`; ctx.fillStyle = 'rgba(200,220,240,.7)'; ctx.fillText(SLOTS.find(s => s.id === GEAR[it.id].slot).n, x, y + 44); }
   });
   // 图鉴：已获得的点亮
-  ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText(`收集 ${all.filter(it => book[it.id]).length}/${all.length}`, W / 2, 292);
+  ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText(`收集  战机 ${all.filter(it => book[it.id]).length}/${all.length} · 装备 ${Object.keys(save.gear).filter(k => GEAR[k]).length}/${Object.keys(GEAR).length}`, W / 2, 292);
   const cols = gachaPool === 'f' ? 4 : 7, cw = (W - 40) / cols;
   [...all].sort((a, b) => b.g - a.g).forEach((it, i) => {
     const x = 20 + (i % cols + .5) * cw, y = (gachaPool === 'f' ? 322 : 318) + Math.floor(i / cols) * (gachaPool === 'f' ? 50 : 44), own = book[it.id] || 0;
@@ -5935,8 +5941,8 @@ function drawGacha() {
   });
   const r = PL.rates, pity = save.pity[gachaPool];
   if (gachaPool === 'f') {
-    ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText(`战机设计图 ${FIGHTER_RATE}%（7 架概率相同）  ·  装备设计图 ${100 - FIGHTER_RATE}%`, W / 2, 448);
-    ctx.font = `11px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText('十连至少 1 张战机设计图', W / 2, 468);
+    ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText(`战机设计图 ${FIGHTER_RATE}% · 装备设计图 ${GEAR_RATE}% · 材料 ${100 - FIGHTER_RATE - GEAR_RATE}%`, W / 2, 448);
+    ctx.font = `11px ${FONT}`; ctx.fillStyle = '#9fc0dc'; ctx.fillText('十连至少 1 张战机设计图 · 材料：合金×8 / 能量核×3 / 星核×1', W / 2, 468);
     ctx.fillText(`设计图 + 材料 → 合成 · 已有的再抽到 → 升星（最高 5★）`, W / 2, 486);
   } else {
     ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText(`共 ${all.length} 件装备设计图，每件概率相同`, W / 2, 448);
@@ -5984,7 +5990,7 @@ function drawCraft() {
   }
   ctx.textAlign = 'center'; ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(190,230,255,.65)';
   ctx.fillText(`战机：合金 ${RECIPE.f[0]} · 能量核 ${RECIPE.f[1]} · 星核 ${RECIPE.f[2]}　装备减半`, W / 2, 586);
-  ctx.fillText('小怪掉合金 · 精英和冠军掉能量核 · 首领掉星核', W / 2, 604);
+  ctx.fillText('合金：小怪 · 能量核：精英和冠军 · 星核：首领、每 5 波、占领', W / 2, 604);
 }
 function craft(key) {
   const f = key.startsWith('f:'), id = f ? key.slice(2) : key, rc = RECIPE[f ? 'f' : 'e'], n = save.bp[key] || 0, book = f ? save.fighters : save.gear;
@@ -6016,14 +6022,16 @@ function drawGachaResult() {
     if (k < .5) ctx.drawImage(cardBack(cw, ch), x, y, cw, ch);
     else {
       const book = it.kind === 'f' ? save.fighters : save.gear;
+      if (it.kind === 'm') drawCard(it, x, y, cw, ch, { ph: i * .13, tag: '×' + it.amt, tagC: `rgb(${MATS[it.m].c})` }); else {
       const tag = it.bp ? '设计图' : it.isNew ? 'NEW' : it.up ? it.up + '★' : '+' + it.refund, tagC = it.bp ? '#7fc8ff' : it.isNew ? '#ff5a8a' : it.up ? '#ffd23f' : '#7ff0ff';
-      drawCard(it, x, y, cw, ch, { ph: i * .13, stars: it.bp ? 0 : book[it.id] || 1, tag, tagC, bp: !!it.bp });
+      drawCard(it, x, y, cw, ch, { ph: i * .13, stars: it.bp ? 0 : book[it.id] || 1, tag, tagC, bp: !!it.bp }); }
     }
     ctx.restore();
     // 翻开瞬间的光环
     const rt = gachaT - revealAt(i) - .1;
     if (it.g && rt > 0 && rt < .5) { const f = rt / .5; ctx.globalCompositeOperation = 'lighter'; ctx.strokeStyle = `rgba(${G.rgb},${1 - f})`; ctx.lineWidth = 3 * (1 - f) + 1; ctx.beginPath(); ctx.arc(cx, cy, cw * (.5 + f * (it.g === 2 ? 1.1 : .7)), 0, TAU); ctx.stroke(); ctx.globalCompositeOperation = 'source-over'; }
-    if (one && k >= 1) {
+    if (one && k >= 1 && it.kind === 'm') { ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = `rgb(${MATS[it.m].c})`; ctx.fillText(`${MATS[it.m].name} ×${it.amt} · 现在有 ${save.mat[it.m]}`, W / 2, y + ch + 30); }
+    else if (one && k >= 1) {
       const desc = it.kind === 'f' ? SKINS[it.id].sig.desc : GEAR[it.id].desc, eff = it.kind === 'f' ? fighterEffect(it.id) : gearEffect(it.id);
       ctx.font = `13px ${FONT}`; ctx.fillStyle = '#d8ecfa'; ctx.fillText(desc, W / 2, y + ch + 30);
       if (it.bp) { ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#7fc8ff'; ctx.fillText(`设计图 ×${it.bp} · 在「合成」里用材料造出来`, W / 2, y + ch + 54); drawMatRow(W / 2, y + ch + 80, save.mat, { need: RECIPE[it.kind === 'f' ? 'f' : 'e'], s: 18, fs: 12 }); }
@@ -6032,8 +6040,8 @@ function drawGachaResult() {
     }
   });
   if (!one && gachaT > revealAt(n - 1) + .3) {
-    const nb = gachaRes.filter(o => o.bp).length, nu = gachaRes.filter(o => o.up).length;
-    ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#cfe6f6'; ctx.fillText(`设计图 ${nb} · 升星 ${nu}`, W / 2, 452);
+    const nb = gachaRes.filter(o => o.bp).length, nu = gachaRes.filter(o => o.up).length, nm = gachaRes.filter(o => o.kind === 'm').length;
+    ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#cfe6f6'; ctx.fillText(`设计图 ${nb} · 升星 ${nu} · 材料 ${nm}`, W / 2, 452);
   }
   if (gachaT > revealAt(n - 1) + .3) { ctx.globalAlpha = .6 + .4 * Math.sin(time * 4); ctx.font = `bold 14px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText('点击继续', W / 2, H - 80); ctx.globalAlpha = 1; }
 }
