@@ -2877,7 +2877,7 @@ const UPGRADES = [
 // ================= 武器定义 =================
 const WEAPONS = {
   vulcan: { name: '极光等离子', key: 'V', c: '80,190,255', desc: '多道等离子光弹，覆盖面广' },
-  laser: { name: '圣辉光束', key: 'L', c: '255,90,220', desc: '持续光束，单体伤害极高' },
+  laser: { name: '圣辉光束', key: 'L', c: '255,90,220', desc: '持续光束，照得越久伤害越高' },
   wave: { name: '虚空镰刃', key: 'W', c: '200,110,255', desc: '扩张的暗影镰刃，贯穿所有敌人' },
   thunder: { name: '雷霆', key: 'T', c: '255,230,90', desc: '自动锁定的闪电，多目标打击' },
   flame: { name: '熔火喷流', key: 'F', c: '255,120,40', desc: '机头锥形火焰，持续灼烧敌人' },
@@ -2922,8 +2922,8 @@ const BRANCHES = {
     { id: 'bounce', name: '屏幕折射', icon: '折', desc: '子弹斜向射出，在屏幕边缘反弹 2 次' },
   ],
   laser: [
-    { id: 'giga', name: '无限粗光炮', icon: '粗', desc: '光束暴涨到极粗，贯穿整列所有敌人' },
-    { id: 'whip', name: '鞭笞光束', icon: '鞭', desc: '加粗的光鞭左右横扫，贯穿扫过的所有敌人' },
+    { id: 'giga', name: '无限粗光炮', icon: '粗', desc: '光束暴涨到极粗，贯穿整列敌人，越往后伤害越低' },
+    { id: 'whip', name: '鞭笞光束', icon: '鞭', desc: '加粗的光鞭左右横扫，贯穿扫过的敌人，越往后伤害越低' },
     { id: 'prism', name: '折射棱镜', icon: '棱', desc: '命中后折射出多道光束，射向附近敌人' },
   ],
   wave: [
@@ -3764,12 +3764,60 @@ function zap(t, dmg, col, br) {
   }
   return t.kind !== 'b' && r.hp <= 0;
 }
+// ---------- 光束的弱点 ----------
+// 穿透衰减（无限粗光炮、鞭笞光束）：打到的敌人按离炮口远近排队，第 1 个吃满伤害，之后每个 -20%，最低 30%；
+// 光束每穿过一个敌人，后面就画得细一点、暗一点，看得出伤害在掉
+const PIERCE_FALL = .8, PIERCE_MIN = .3, PIERCE_VIS = 6;
+const pierceK = i => Math.max(PIERCE_MIN, Math.pow(PIERCE_FALL, i));
+// 点到折线最近处，沿折线离起点有多远
+function polyS(pts, x, y) {
+  let best = 1e18, bs = 0, acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const ax = pts[i - 1][0], ay = pts[i - 1][1], dx = pts[i][0] - ax, dy = pts[i][1] - ay, L2 = dx * dx + dy * dy || 1, L = Math.sqrt(L2);
+    const u = clamp(((x - ax) * dx + (y - ay) * dy) / L2, 0, 1), d = (x - ax - dx * u) ** 2 + (y - ay - dy * u) ** 2;
+    if (d < best) { best = d; bs = acc + u * L; }
+    acc += L;
+  }
+  return bs;
+}
+// 画穿透衰减：不拼接小段（拼接处会有缝），而是从炮口叠画几条长短不同的光束——第 i 条画到第 i 个敌人为止，
+// 透明度叠起来正好是每一段该有的亮度，宽度也一段比一段窄；最长的一条是衰减到底后的样子
+function polyStrip(tex, pts, end, w) {   // 沿折线从起点画到离起点 end 处
+  let acc = 0;
+  for (let i = 1; i < pts.length && acc < end; i++) {
+    const ax = pts[i - 1][0], ay = pts[i - 1][1], bx = pts[i][0], by = pts[i][1], L = Math.hypot(bx - ax, by - ay), u = Math.min(1, (end - acc) / (L || 1));
+    fxStrip(tex, ax, ay, ax + (bx - ax) * u, ay + (by - ay) * u, w);
+    acc += L;
+  }
+}
+function fxStripFall(tex, pts, w, cuts) {
+  const a0 = ctx.globalAlpha, n = cuts.length, A = k => .45 + .55 * pierceK(k), Wd = k => w * (.75 + .25 * pierceK(k));
+  for (let i = n; i >= 0; i--) {
+    const al = i === n ? A(n) : A(i) - A(i + 1); if (al <= .002) continue;
+    ctx.globalAlpha = a0 * al;
+    polyStrip(tex, pts, i === n ? 1e9 : cuts[i], Wd(i));
+  }
+  ctx.globalAlpha = a0;
+}
+// 照射升温（普通光束、折射棱镜）：锁住的敌人会被慢慢烧热，每个敌人各自记热度，伤害 50% → 130%。
+// 开局约 2.5 秒烧满，攻速越高烧得越快（攻速仍然照常加伤害）；离开目标 1 秒内热度还在，之后半秒冷却到底
+const HEAT_LO = .5, HEAT_HI = 1.3, HEAT_T0 = 2.5, HEAT_KEEP = 1, HEAT_COOL = 2;
+let beamClock = 0;
+function beamHeat(ref, dt, rate) {
+  const idle = beamClock - (ref.bhT ?? -9);
+  if (idle > HEAT_KEEP) ref.bh = Math.max(0, (ref.bh || 0) - (idle - HEAT_KEEP) * HEAT_COOL);
+  ref.bh = Math.min(1, (ref.bh || 0) + dt * Math.sqrt(Math.max(.01, rate) / (SURV ? SURV_RATE0 : 1)) / HEAT_T0);
+  ref.bhT = beamClock;
+  return ref.bh;
+}
 function fireLaser(dt, eff, rate, br) {
   const P = player, S = P.s, x = P.x, y0 = P.y - 40, dps = (25 + eff * 14) * S.dmgMul * rate, col = '255,90,220';
+  beamClock += dt;
   if (br === 'giga') {
     const w = 50 + eff * 22 + S.spread * 10, pts = [[x, y0], [x, -30]];
-    P.beams.push({ pts, w, c: col, giga: true });
-    for (const t of lineTargets(pts, w)) if (t.y < y0 + 20) applyHit(t, dps * .75 * dt, t.x, t.y + tReach(t) * .5, '255,120,230', dt);
+    const hits = lineTargets(pts, w).filter(t => t.y < y0 + 20).map(t => (t.s = Math.max(0, y0 - t.y), t)).sort((a, b) => a.s - b.s);
+    hits.forEach((t, i) => applyHit(t, dps * .75 * pierceK(i) * dt, t.x, t.y + tReach(t) * .5, '255,120,230', dt));
+    P.beams.push({ pts, w, c: col, giga: true, fall: hits.slice(0, PIERCE_VIS).map(t => t.s) });
     shake = Math.max(shake, 1.2);
     return;
   }
@@ -3793,19 +3841,21 @@ function fireLaser(dt, eff, rate, br) {
     const pts = [[x, y0]];
     let px = x, py = y0;
     for (let i = 1; i <= N; i++) { const s = (i - .5) * seg, phi = Math.atan(2 * P.whipB * s / (Lw * Lw)); px += Math.sin(phi) * seg; py -= Math.cos(phi) * seg; pts.push([px, py]); }
-    P.beams.push({ pts, w: w * (.9 + (crack - 1) * .3), c: crack > 1.6 ? '255,170,245' : col });
-    for (const t of lineTargets(pts, w)) applyHit(t, dps * .8 * crack * dt, t.x, t.y, '255,120,230', dt);
+    const hits = lineTargets(pts, w).map(t => (t.s = polyS(pts, t.x, t.y), t)).sort((a, b) => a.s - b.s);
+    hits.forEach((t, i) => applyHit(t, dps * .8 * crack * pierceK(i) * dt, t.x, t.y, '255,120,230', dt));
+    P.beams.push({ pts, w: w * (.9 + (crack - 1) * .3), c: crack > 1.6 ? '255,170,245' : col, fall: hits.slice(0, PIERCE_VIS).map(t => t.s) });
     return;
   }
-  const w = 3 + eff * 4.4 + S.spread * 5, hit = castBeam(x, y0, -Math.PI / 2, w);
-  P.beams.push({ pts: [[x, y0], [x, hit.tgt ? hit.y : -30]], w, c: col, end: !!hit.tgt });
+  const w = 3 + eff * 4.4 + S.spread * 5, hit = castBeam(x, y0, -Math.PI / 2, w), bm = { pts: [[x, y0], [x, hit.tgt ? hit.y : -30]], w, c: col, end: !!hit.tgt };
+  P.beams.push(bm);
   if (!hit.tgt) return;
   P.mainTarget = hit.tgt;
-  applyHit(hit.tgt, dps * dt, hit.x, hit.y, '255,120,230', dt);
+  const h = bm.heat = beamHeat(hit.tgt.ref, dt, rate), hk = HEAT_LO + (HEAT_HI - HEAT_LO) * h;
+  applyHit(hit.tgt, dps * hk * dt, hit.x, hit.y, h > .6 ? '255,215,250' : '255,120,230', dt);
   if (br === 'prism') {
     const n = 2 + Math.floor(eff / 2);
     const list = targets().filter(t => t.ref !== hit.tgt.ref).map(t => (t.d = Math.hypot(t.x - hit.x, t.y - hit.y), t)).filter(t => t.d < 320).sort((a, b) => a.d - b.d).slice(0, n);
-    for (const t of list) { P.beams.push({ pts: [[hit.x, hit.y], [t.x, t.y]], w: w * .45, c: '170,120,255', end: true }); applyHit(t, dps * .45 * dt, t.x, t.y, '200,150,255', dt * .5); }
+    for (const t of list) { P.beams.push({ pts: [[hit.x, hit.y], [t.x, t.y]], w: w * .45, c: '170,120,255', end: true }); applyHit(t, dps * .45 * hk * dt, t.x, t.y, '200,150,255', dt * .5); }   /* 折射光跟主光束一样热 */
     if (!list.length) for (const s of [-1, 1]) { const a = -Math.PI / 2 + s * .9; P.beams.push({ pts: [[hit.x, hit.y], [hit.x + Math.cos(a) * 320, hit.y + Math.sin(a) * 320]], w: w * .4, c: '170,120,255' }); }
   }
 }
@@ -7984,8 +8034,10 @@ function drawBeam(b) {
   // 手绘光束贴图：沿每一段铺长条，起点炮口光 + 终点命中星芒
   const tex = fxGet('beam', b.c);
   if (tex) {
-    const w = (b.giga ? b.w * 1.25 : b.w * 3) * fl;
-    for (let i = 1; i < pts.length; i++) fxStrip(tex, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], w);
+    const w = (b.giga ? b.w * 1.25 : b.w * 3) * fl * (1 + .2 * (b.heat || 0));
+    if (b.fall && b.fall.length) fxStripFall(tex, pts, w, b.fall);
+    else for (let i = 1; i < pts.length; i++) fxStrip(tex, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], w);
+    if (b.heat > .03) { const ht = fxGet('beam', '255,236,250'), a0 = ctx.globalAlpha; if (ht) { ctx.globalAlpha = a0 * b.heat * .8; for (let i = 1; i < pts.length; i++) fxStrip(ht, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], w * .6); ctx.globalAlpha = a0; } }   // 照射升温：越热越白
     if (b.giga) for (let i = 0; i < 3; i++) { const x = pts[0][0] + rnd(-b.w, b.w) * .6; jagged(x, pts[0][1], x + rnd(-20, 20), rnd(0, pts[0][1]), b.c, .35, 1.5); }
     const fx = fxGet('flare', b.c), e = pts[pts.length - 1];
     if (fx) {
