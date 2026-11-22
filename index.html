@@ -2923,7 +2923,7 @@ const UPGRADES = [
   { id: 'blast', name: '殉爆反应', icon: '爆', rar: 1, max: 3, desc: '击毁敌机时引发范围爆炸', apply: s => s.blast++ },
   { id: 'slow', name: '时间缓流', icon: '缓', rar: 1, max: 3, desc: '敌方子弹速度 -10%', apply: s => s.bulletSlow *= .9 },
   { id: 'wing', name: '僚机支援', icon: '僚', rar: 1, max: 5, desc: '获得一架僚机；每被击中 2 次损毁 1 架', apply: s => s.wingmen++, cond: p => p.s.wingmen < 5 },
-  { id: 'chain', name: '雷电链', icon: '雷', rar: 2, max: 3, desc: '命中时 15% 几率弹射闪电', apply: s => s.chain += .15 },
+  // 「雷电链」卡 2026-11-23 删掉：弹射闪电是雷霆的专属（进化「群体链接」），别的武器不该冒闪电
   { id: 'leech', name: '纳米修复', icon: '愈', rar: 2, max: 2, desc: '每击毁 40 架敌机修复 1 格护甲', apply: s => s.leech++ },
   { id: 'dodge', name: '相位闪避', icon: '闪', rar: 2, max: 3, desc: '受到攻击时 15% 几率闪避', apply: s => s.dodge += .15 },
 ];
@@ -3126,7 +3126,6 @@ function drawChestUI() {
 }
 // ================= 组合技：指定的两种强化都升满，自动合成一个超级强化 =================
 const SYNERGY = [
-  { id: 'chainblast', a: 'blast', b: 'chain', name: '连环殉爆', desc: '殉爆范围 +60%，并向 2 个敌人弹射闪电' },
   { id: 'storm', a: 'spread', b: 'pierce', name: '贯穿风暴', desc: '所有伤害 +25%，子弹无限穿透', apply: s => { s.dmgMul *= 1.25; s.pierce += 99; } },
   { id: 'reactive', a: 'armor', b: 'shield', name: '反应装甲', desc: '护盾充能快一倍，破盾时清除周围敌弹' },
   { id: 'rhythm', a: 'aspd', b: 'crit', name: '致命节奏', desc: '暴击伤害 2.5 倍 → 4 倍' },
@@ -3509,7 +3508,6 @@ function applyHit(t, base, x, y, rgb = '120,220,255', proc = 1) {
   else if (t.kind === 'p') foeHit(t.ref, d);
   else damageBoss(d);
   if (Math.random() < proc * 8) hitSpark(x, y, crit ? '255,230,90' : rgb);
-  if (S.chain && Math.random() < S.chain * proc) chainFrom(x, y, t.ref);
 }
 function chainFrom(x, y, src) {
   let jumps = 2 + Math.floor(player.s.chain / .15), hit = new Set([src]), cx = x, cy = y;
@@ -3864,7 +3862,7 @@ function fireThunder(eff, rate, br) {
 function zap(t, dmg, col, br) {
   const r = t.ref;
   applyHit(t, dmg, t.x, t.y, col);
-  if (br === 'emp') { if (t.kind === 'e') r.slow = 2.5; else if (t.kind !== 'p' && boss) boss.slow = 1.5; }   // 星球据点不吃减速（以前打到据点、场上又没有首领时这里会出错，游戏直接卡死）
+  if (br === 'emp') { if (t.kind === 'e') { r.slow = 2.5; r.emp = 2.5; } else if (t.kind !== 'p' && boss) boss.slow = 1.5; }   // 星球据点不吃减速（以前打到据点、场上又没有首领时这里会出错，游戏直接卡死）
   if (br === 'exec') {
     if (t.kind === 'e' && r.hp > 0 && r.hp < r.maxHp * .35) { if (!SURV) floatText(r.x, r.y - 22, '秒杀', 14, '#e9a6ff', .6); damageEnemy(r, 1e9); }
     else if (t.kind === 't' && r.hp > 0 && r.hp < r.max * .2) { floatText(t.x, t.y - 22, '秒杀', 16, '#e9a6ff', .6); damageTurret(r, 1e9); }
@@ -4186,7 +4184,8 @@ function updateEnemies(dt) {
     let edt = dt;
     if (e.stun > 0) { e.stun -= dt; edt = 0; }
     if (e.mark > 0) e.mark -= dt;   // 被虚空裂缝定住：不动也不开火
-    if (e.slow > 0) { e.slow -= dt; edt = Math.min(edt, dt * .4); if (Math.random() < dt * 6) boltFx(e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), '120,200,255'); }
+    // 减速：只有雷霆「电磁麻痹」造成的减速才冒小闪电（熔火「熔甲灼烧」的减速不冒，闪电是雷霆的专属）
+    if (e.slow > 0) { e.slow -= dt; if (e.emp > 0) e.emp -= dt; edt = Math.min(edt, dt * .4); if (e.emp > 0 && Math.random() < dt * 6) boltFx(e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), '120,200,255'); }
     e.t += edt;
     if (SURV) survEnemyMove(e, edt);
     else if (e.type === 'fighter' || e.type === 'sniper' || e.type === 'acidbat' || e.type === 'hive' || e.type === 'sentinel' || e.type === 'wraith') {
@@ -4673,10 +4672,9 @@ function killEnemy(e) {
   P.kills++;
   if (S.leech && P.kills % (S.leech >= 2 ? 25 : 40) === 0 && P.armor < P.maxArmor) { P.armor++; floatText(P.x, P.y - 50, '纳米修复 +1', 15, '#7dff9a'); }
   if (S.blast) {
-    const cb = P.syn.chainblast, rad = (45 + S.blast * 15) * (cb ? 1.6 : 1);
+    const rad = 45 + S.blast * 15;
     addPart({ t: 'ring', x: e.x, y: e.y, vx: 0, vy: 0, life: .3, max: .3, size: rad, c: '255,160,60' });
     for (const o of enemies) if (o !== e && o.hp > 0 && Math.hypot(o.x - e.x, o.y - e.y) < rad + o.r) damageEnemy(o, 3 * S.blast * S.dmgMul);
-    if (cb) { let n = 0; for (const o of enemies) { if (n >= 2) break; if (o !== e && o.hp > 0 && Math.hypot(o.x - e.x, o.y - e.y) < 230) { n++; boltFx(e.x, e.y, o.x, o.y, '255,190,90'); damageEnemy(o, 6 * S.dmgMul); } } }   // 组合技「连环殉爆」
   }
   const r = Math.random(), r2 = Math.random();
   // 生存模式：不掉"火力升级"（武器等级靠选"主炮升级"卡）；精英掉炸弹，小怪偶尔掉护甲修复
@@ -8515,7 +8513,6 @@ function cardLv(u) {
     shield: () => `护盾 ${S.shieldMax} → ${S.shieldMax + 1}`,
     wing: () => `僚机 ${S.wingmen} → ${S.wingmen + 1}`,
     dodge: () => `闪避 ${pct(S.dodge)} → ${pct(S.dodge + .15)}`,
-    chain: () => `弹射 ${pct(S.chain)} → ${pct(S.chain + .15)}`,
   };
   if (T[u.id]) L.txt = T[u.id]();
   return L;
