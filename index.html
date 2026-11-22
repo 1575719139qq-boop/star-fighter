@@ -2096,13 +2096,13 @@ function drawCore(p) {
 // 两层云转速不同（外快内慢的错位感）；云影朝右下错开一点（光从左上来，方向固定不跟着转）
 const CLOUD_K = 3, CLOUD_W = [.03, .017];   // 分辨率缩小倍数；两层云的转速（弧度 / 秒，约 3.5 分钟和 6 分钟一圈）
 // 每种星球的云：[颜色, 浓度, 云絮数量]——赤岩星是烟尘，霜蓝 / 翠林是白云，沙丘是沙尘，晶体是紫雾，毒雾星是绿雾
-const CLOUD_PAL = [['200,130,100', .4, 85], ['240,248,255', .62, 120], ['240,250,242', .42, 100], ['240,216,165', .45, 95], ['214,200,255', .4, 85], ['198,235,120', .5, 115]];
+const CLOUD_PAL = [['215,145,110', .62, 110], ['244,250,255', .88, 150], ['244,252,246', .72, 130], ['244,222,172', .7, 125], ['222,208,255', .64, 110], ['204,240,128', .74, 150]];
 function planetClouds(p) {
   const s = Math.ceil(p.half * 2 / CLOUD_K), c = s / 2, R = p.R / CLOUD_K, [col, den, n] = CLOUD_PAL[p.kind % CLOUD_PAL.length];
   const layer = (cnt, rMin) => makeCanvas(s, s, g => {
     // 一团团沿圆周方向拉长的柔边云絮
     for (let i = 0; i < cnt; i++) {
-      const r = R * Math.sqrt(rnd(rMin, 1)), a = rnd(0, TAU), len = rnd(16, 52) * (.5 + r / R), wd = rnd(5, 12), al = rnd(.3, 1) * den;
+      const r = R * Math.sqrt(rnd(rMin, 1)), a = rnd(0, TAU), len = rnd(20, 62) * (.5 + r / R), wd = rnd(6, 15), al = rnd(.35, 1) * den;
       g.save(); g.translate(c + Math.cos(a) * r, c + Math.sin(a) * r); g.rotate(a + Math.PI / 2 + rnd(-.25, .25)); g.scale(len, wd);
       const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); gr.addColorStop(0, `rgba(${col},${al})`); gr.addColorStop(.6, `rgba(${col},${al * .45})`); gr.addColorStop(1, `rgba(${col},0)`);
       g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, TAU); g.fill(); g.restore();
@@ -2117,7 +2117,7 @@ function drawPlanetClouds(p, x0, y0, x1, y1, sx0, sy0) {
   g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; g.clearRect(0, 0, s, s);
   for (let i = 0; i < 2; i++) {
     const a = C.a0[i] + time * CLOUD_W[i];
-    g.save(); g.translate(h + 2.2, h + 2.8); g.rotate(a); g.globalAlpha = .5; g.drawImage(C.shd[i], -h, -h); g.restore();
+    g.save(); g.translate(h + 2.2, h + 2.8); g.rotate(a); g.globalAlpha = .6; g.drawImage(C.shd[i], -h, -h); g.restore();
     g.save(); g.translate(h, h); g.rotate(a); g.globalAlpha = 1; g.drawImage(C.tex[i], -h, -h); g.restore();
   }
   g.globalCompositeOperation = 'destination-in'; g.globalAlpha = 1; g.drawImage(p.cv, 0, 0, s, s);   // 只留在还有岩层的地方
