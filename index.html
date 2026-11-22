@@ -3524,7 +3524,10 @@ function chainFrom(x, y, src) {
 }
 // ================= 闪电（雷霆和所有电弧共用）=================
 let thFlashT = -9;   // 雷霆上一次放电的时间：机体上的电弧跟着亮一下
-const thunderCol = br => br === 'exec' ? '225,130,255' : br === 'emp' ? '90,235,255' : '150,165,255';
+// 2026-11-23：主武器和必杀都用战机当前的颜色（LOOK.emis，进化换涂装后跟着变），不再按武器 / 元素固定颜色
+const rgbMix = (a, b, k) => { const p = a.split(',').map(Number), q = b.split(',').map(Number); return p.map((v, i) => Math.round(v + (q[i] - v) * k)).join(','); };
+const rgbDark = (a, k) => a.split(',').map(v => Math.round(Number(v) * k)).join(',');
+const thunderCol = br => br === 'exec' ? rgbMix(LOOK.emis, '255,255,255', .25) : LOOK.emis;
 // 机体贴图上的点（贴图坐标）在屏幕上的位置：跟着机体缩放和生存模式的转向
 function shipPt(lx, ly) {
   const P = player, x = P.x + lx * SHIP_K, y = P.y + ly * SHIP_K;
@@ -3709,8 +3712,8 @@ function fireVulcan(eff, rate, br) {
 const MARK_CD = 2, MARK_T = 3, MARK_K = 1.3;
 function auroraMark(x, y) {
   for (const e of enemies) if (e.hp > 0 && Math.hypot(e.x - x, e.y - y) < 80 + e.r) e.mark = MARK_T;
-  addPart({ t: 'ring', x, y, vx: 0, vy: 0, life: .4, max: .4, size: 170, c: '120,240,255' });
-  addPart({ t: 'glow', x, y, vx: 0, vy: 0, life: .3, max: .3, size: 110, c: '150,250,255' });
+  addPart({ t: 'ring', x, y, vx: 0, vy: 0, life: .4, max: .4, size: 170, c: LOOK.emis });
+  addPart({ t: 'glow', x, y, vx: 0, vy: 0, life: .3, max: .3, size: 110, c: rgbMix(LOOK.emis, '255,255,255', .3) });
   tone(1180, .12, 'triangle', .05); tone(1560, .16, 'triangle', .04, 0, .06);
 }
 // 圣辉光束 · 净化：光束扫过的敌方子弹直接被烧掉
@@ -3916,7 +3919,7 @@ function beamHeat(ref, dt, rate) {
   return ref.bh;
 }
 function fireLaser(dt, eff, rate, br) {
-  const P = player, S = P.s, x = P.x, y0 = P.y - 40, dps = (25 + eff * 14) * S.dmgMul * rate, col = '255,90,220';
+  const P = player, S = P.s, x = P.x, y0 = P.y - 40, dps = (25 + eff * 14) * S.dmgMul * rate, col = LOOK.emis;   // 光束颜色 = 战机颜色
   beamClock += dt;
   if (br === 'giga') {
     const w = 50 + eff * 22 + S.spread * 10, pts = [[x, y0], [x, -30]];
@@ -4185,7 +4188,7 @@ function updateEnemies(dt) {
     if (e.stun > 0) { e.stun -= dt; edt = 0; }
     if (e.mark > 0) e.mark -= dt;   // 被虚空裂缝定住：不动也不开火
     // 减速：只有雷霆「电磁麻痹」造成的减速才冒小闪电（熔火「熔甲灼烧」的减速不冒，闪电是雷霆的专属）
-    if (e.slow > 0) { e.slow -= dt; if (e.emp > 0) e.emp -= dt; edt = Math.min(edt, dt * .4); if (e.emp > 0 && Math.random() < dt * 6) boltFx(e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), '120,200,255'); }
+    if (e.slow > 0) { e.slow -= dt; if (e.emp > 0) e.emp -= dt; edt = Math.min(edt, dt * .4); if (e.emp > 0 && Math.random() < dt * 6) boltFx(e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), e.x + rnd(-e.r, e.r), e.y + rnd(-e.r, e.r), LOOK.emis); }
     e.t += edt;
     if (SURV) survEnemyMove(e, edt);
     else if (e.type === 'fighter' || e.type === 'sniper' || e.type === 'acidbat' || e.type === 'hive' || e.type === 'sentinel' || e.type === 'wraith') {
@@ -4229,7 +4232,7 @@ function updateEnemies(dt) {
       const bd = burnDps(e.burnLv, e.burnK) * dt; e.hp -= bd; burnNumber(e, e.x, e.y - e.r, bd, dt);
       if (Math.random() < dt * 6) { const sp = e.spots[Math.random() * e.spots.length | 0]; addPart({ t: 'smoke', x: e.x + sp.x, y: e.y + sp.y, vx: rnd(-10, 10), vy: -30, life: .7, max: .7, size: e.r * .4, c: '' }); }
       if (fb === 'melt') e.slow = Math.max(e.slow || 0, .15);
-      if (fb === 'wild' && (e.spreadT = (e.spreadT || 0) - dt) <= 0) { e.spreadT = .5; for (const o of enemies) if (o !== e && o.hp > 0 && !(o.burn > 0) && Math.hypot(o.x - e.x, o.y - e.y) < 75) { o.burn = 3; o.burnLv = e.burnLv; o.burnK = e.burnK; addPart({ t: 'glow', x: (o.x + e.x) / 2, y: (o.y + e.y) / 2, vx: 0, vy: -20, life: .3, max: .3, size: 18, c: '255,150,40' }); } }
+      if (fb === 'wild' && (e.spreadT = (e.spreadT || 0) - dt) <= 0) { e.spreadT = .5; for (const o of enemies) if (o !== e && o.hp > 0 && !(o.burn > 0) && Math.hypot(o.x - e.x, o.y - e.y) < 75) { o.burn = 3; o.burnLv = e.burnLv; o.burnK = e.burnK; o.burnC = e.burnC; addPart({ t: 'glow', x: (o.x + e.x) / 2, y: (o.y + e.y) / 2, vx: 0, vy: -20, life: .3, max: .3, size: 18, c: '255,150,40' }); } }
       if (e.hp <= 0) killEnemy(e); else if (Math.random() < dt * 8) addPart({ t: 'glow', x: e.x + rnd(-e.r, e.r) * .5, y: e.y, vx: 0, vy: -40, life: .4, max: .4, size: 12, c: '255,130,40' }); }
     if (canFire && !(e.stun > 0) && (SURV ? e.x > -10 && e.x < W + 10 && e.y > -10 && e.y < H + 10 : e.y > 10 && e.y < H * .7)) {
       if (SURV && (SURV_MELEE.has(e.type) || SURV_SPECIAL.has(e.type))) { /* 生存模式：近战型不开火，特殊型用自己的攻击 */ }
@@ -4328,11 +4331,11 @@ function castUlt() {
   return true;
 }
 function fireUlt(id) {
-  const D = ULT_DEF[id] || ULT_DEF.silver;
+  const c = LOOK.emis;   // 必杀颜色 = 战机当前颜色（2026-11-23：不再按元素固定颜色）
   flash = Math.max(flash, .55); shake = Math.max(shake, 14);
-  for (const b of eBullets) if (!b.dead && onScr(b.x, b.y, 20)) { b.dead = true; addPart({ t: 'glow', x: b.x, y: b.y, vx: 0, vy: -40, life: .35, max: .35, size: 12, c: D.c }); }
+  for (const b of eBullets) if (!b.dead && onScr(b.x, b.y, 20)) { b.dead = true; addPart({ t: 'glow', x: b.x, y: b.y, vx: 0, vy: -40, life: .35, max: .35, size: 12, c }); }
   noise(1.1, .3, 500); tone(70, .9, 'sawtooth', .09, -.4);
-  ultFx.push(ULT_FX[id] ? ULT_FX[id](player, ultDmg(), D.c) : ULT_FX.silver(player, ultDmg(), D.c));
+  ultFx.push(ULT_FX[id] ? ULT_FX[id](player, ultDmg(), c) : ULT_FX.silver(player, ultDmg(), c));
 }
 // 世界一步：切入期间世界只走 6% 的速度，切入结束时放出大招（游戏里和主界面演示共用）
 function stepWorld(dt, speed = 1) {
@@ -4387,23 +4390,23 @@ const ULT_FX = {
         const tr = n.tr;
         if (tr.length >= 4) { ctx.strokeStyle = `rgba(${c},.45)`; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(tr[0], tr[1]); for (let i = 2; i < tr.length; i += 2) ctx.lineTo(tr[i], tr[i + 1]); ctx.lineTo(n.x, n.y); ctx.stroke(); ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 1.2; ctx.stroke(); }
         drawGlow(n.x, n.y, 16, c, .9);
-        if (FX.needle) { ctx.save(); ctx.translate(n.x, n.y); ctx.rotate(Math.atan2(n.vx, -n.vy)); ctx.drawImage(FX.needle, -3, -10, 6, 46); ctx.restore(); }
+        const nd = fxGet('needle', c); if (nd) { ctx.save(); ctx.translate(n.x, n.y); ctx.rotate(Math.atan2(n.vx, -n.vy)); ctx.drawImage(nd, -3, -10, 6, 46); ctx.restore(); }
       }
       ctx.lineCap = 'butt';
     };
     f.shift = (dx, dy) => { for (const n of f.ns) { n.x += dx; n.y += dy; for (let i = 0; i < n.tr.length; i += 2) { n.tr[i] += dx; n.tr[i + 1] += dy; } } };
     return f;
   },
-  // 赤焰 · 炼狱风暴：火环从机体扩散到全屏（点燃所有敌人），随后火柱在敌人脚下接连喷发
+  // 赤焰 · 炼狱风暴：能量环从机体扩散到全屏，随后能量柱在敌人脚下接连喷发（2026-11-23 去掉火焰外观和点燃，颜色跟战机）
   crimson(P, d, c) {
     const f = { t: 0, dur: 2, R: 0, hit: new Set(), pil: [], pt: 0 }, maxR = Math.hypot(W, H) * .75;
     f.upd = dt => {
       const k = Math.min(1, f.t / .5), cx = P.x, cy = P.y + HIT_OY; f.R = maxR * (1 - (1 - k) ** 2);
-      for (const t of ultTargets(40)) if (!f.hit.has(t.ref) && Math.hypot(t.x - cx, t.y - cy) < f.R) { f.hit.add(t.ref); ultHit(t, d * .4, c); if (t.kind === 'e') { t.ref.burn = Math.max(t.ref.burn || 0, 2); t.ref.burnLv = Math.max(t.ref.burnLv || 0, Math.min(5, P.lv)); } }
+      for (const t of ultTargets(40)) if (!f.hit.has(t.ref) && Math.hypot(t.x - cx, t.y - cy) < f.R) { f.hit.add(t.ref); ultHit(t, d * .5, c); }   // 不再点燃（原来点燃 2 秒），环的伤害 .4 → .5 补回来
       if (f.t > .42 && f.t < 1.4 && (f.pt -= dt) <= 0) {
         f.pt = .055; const tg = ultTargets(10), t = tg.length ? tg[Math.random() * tg.length | 0] : null;
         const x = t ? t.x + rnd(-10, 10) : rnd(30, W - 30), y = t ? t.y + rnd(-10, 10) : rnd(60, H - 100);
-        f.pil.push({ x, y, t: 0, s: rnd(.85, 1.2) }); fxPart('pyre', x, y, 110, .4, { g0: .3, g1: 1 });
+        f.pil.push({ x, y, t: 0, s: rnd(.85, 1.2) }); fxPart('nova', x, y, 110, .4, { c, g0: .3, g1: 1 });
         for (const o of tg) if (Math.hypot(o.x - x, o.y - y) < 50 + (o.r || 0)) ultHit(o, d * .2, c);
         shake = Math.max(shake, 5); if (f.pil.length % 3 === 1) noise(.25, .1, 700);
       }
@@ -4415,21 +4418,21 @@ const ULT_FX = {
       ctx.globalCompositeOperation = 'lighter';
       if (a > 0 && f.R > 4) {
         const g = ctx.createRadialGradient(cx, cy, Math.max(0, f.R - 80), cx, cy, f.R + 12);
-        g.addColorStop(0, 'rgba(255,120,40,0)'); g.addColorStop(.7, `rgba(255,150,60,${.5 * a})`); g.addColorStop(.92, `rgba(255,235,180,${.8 * a})`); g.addColorStop(1, 'rgba(255,200,120,0)');
+        g.addColorStop(0, `rgba(${c},0)`); g.addColorStop(.7, `rgba(${c},${.5 * a})`); g.addColorStop(.92, `rgba(${rgbMix(c, '255,255,255', .7)},${.8 * a})`); g.addColorStop(1, `rgba(${c},0)`);
         ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, f.R + 12, 0, TAU); ctx.fill();
-        const fl = fxGet('flame', '255,140,50');
+        const fl = fxGet('flare', c);
         if (fl) for (let i = 0; i < 28; i++) { const an = i / 28 * TAU + f.t * .8, s = 74 * (.8 + .4 * Math.sin(i * 3.1 + f.t * 9)); ctx.globalAlpha = .55 * a; ctx.save(); ctx.translate(cx + Math.cos(an) * f.R, cy + Math.sin(an) * f.R); ctx.rotate(an + Math.PI / 2); ctx.drawImage(fl, -s / 2, -s / 2, s, s); ctx.restore(); }
         ctx.globalAlpha = 1;
       }
-      const fl = fxGet('flame', '255,150,60');
+      const bm = fxGet('beam', c), core = fxGet('beam', rgbMix(c, '255,255,255', .7));
       for (const q of f.pil) {
         const k = q.t / .6, h = 170 * q.s * Math.min(1, q.t / .12), al = k < .7 ? 1 : (1 - k) / .3;
-        drawGlow(q.x, q.y, 70 * q.s, '255,120,40', .8 * al);
-        if (fl) { ctx.globalAlpha = .85 * al; for (let j = 0; j < 4; j++) { const s = 48 * q.s * (1 - j * .15); ctx.drawImage(fl, q.x - s / 2 + Math.sin(q.t * 30 + j) * 4, q.y - h * (j + .5) / 4 - s / 2, s, s); } ctx.globalAlpha = 1; }
-        drawGlow(q.x, q.y - h * .5, 34 * q.s, '255,230,160', .7 * al);
+        drawGlow(q.x, q.y, 70 * q.s, c, .8 * al);
+        if (bm) { ctx.globalAlpha = .85 * al; fxStrip(bm, q.x, q.y, q.x, q.y - h, 54 * q.s); fxStrip(core, q.x, q.y, q.x, q.y - h, 18 * q.s); ctx.globalAlpha = 1; }   // 能量柱
+        drawGlow(q.x, q.y - h * .5, 34 * q.s, rgbMix(c, '255,255,255', .6), .7 * al);
       }
     };
-    f.over = () => { const a = Math.max(0, .3 - f.t * .6); if (a > 0) { ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(255,110,30,${a})`; ctx.fillRect(0, 0, W, H); } };
+    f.over = () => { const a = Math.max(0, .3 - f.t * .6); if (a > 0) { ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(${c},${a})`; ctx.fillRect(0, 0, W, H); } };
     f.shift = (dx, dy) => { for (const q of f.pil) { q.x += dx; q.y += dy; } };
     return f;
   },
@@ -4468,7 +4471,7 @@ const ULT_FX = {
     };
     return f;
   },
-  // 霜蝎 · 绝对零度：寒潮从机体扩散，冻住屏幕上的敌人和敌弹，1.25 秒后一齐碎裂
+  // 霜蝎 · 绝对零度：能量潮从机体扩散，把屏幕上的敌人定格、敌弹抹掉，1.25 秒后一齐爆散（2026-11-23 去掉冰的外观，颜色跟战机）
   frost(P, d, c) {
     const f = { t: 0, dur: 2, R: 0, fz: [], broke: false }, maxR = Math.hypot(W, H) * .8;
     f.upd = dt => {
@@ -4481,21 +4484,21 @@ const ULT_FX = {
         f.broke = true; shake = Math.max(shake, 16); flash = Math.max(flash, .25);
         noise(.7, .25, 3600); tone(1800, .3, 'triangle', .05, -.7);
         for (const t of ultTargets(40)) ultHit(t, d, c);
-        for (const e of f.fz) { e.frz = 0; for (let i = 0; i < 7; i++) { const a = rnd(0, TAU), v = rnd(80, 260); addPart({ t: 'spark', x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .5, max: .5, c: '220,245,255' }); } fxPart('flare', e.x, e.y, e.r * 3 + 20, .3, { c: '225,245,255', g0: .5, g1: 1.1 }); }
+        for (const e of f.fz) { e.frz = 0; for (let i = 0; i < 7; i++) { const a = rnd(0, TAU), v = rnd(80, 260); addPart({ t: 'spark', x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .5, max: .5, c: rgbMix(c, '255,255,255', .4) }); } fxPart('flare', e.x, e.y, e.r * 3 + 20, .3, { c, g0: .5, g1: 1.1 }); }
       }
     };
     f.drw = () => {
       const cx = P.x, cy = P.y + HIT_OY;
       ctx.globalCompositeOperation = 'lighter';
       if (f.t < .6) { const a = 1 - f.t / .6, nv = fxGet('nova', c); if (nv) { ctx.globalAlpha = a; const s = f.R * 2.1; ctx.drawImage(nv, cx - s / 2, cy - s / 2, s, s); ctx.globalAlpha = 1; } }
-      if (!f.broke) { const ic = fxGet('frost', c); for (const e of f.fz) { if (e.hp <= 0) continue; drawGlow(e.x, e.y, e.r * 2.2, '190,235,255', .85); drawGlow(e.x, e.y, e.r * 1.1, '235,250,255', .6); if (ic) { const s = e.r * 1.9 + 8; ctx.globalAlpha = .6; ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(e.r); ctx.drawImage(ic, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; } } }
+      if (!f.broke) { const ic = fxGet('flare', c); for (const e of f.fz) { if (e.hp <= 0) continue; drawGlow(e.x, e.y, e.r * 2.2, c, .85); drawGlow(e.x, e.y, e.r * 1.1, rgbMix(c, '255,255,255', .6), .6); if (ic) { const s = e.r * 1.9 + 8; ctx.globalAlpha = .6; ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(e.r); ctx.drawImage(ic, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; } } }
     };
-    f.over = () => {   // 屏幕边缘结霜
+    f.over = () => {   // 屏幕边缘一圈战机颜色的光
       const a = f.t < .35 ? f.t / .35 : f.broke ? Math.max(0, 1 - (f.t - 1.25) / .6) : 1; if (a <= 0) return;
       const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .35, W / 2, H / 2, Math.hypot(W, H) * .55);
-      g.addColorStop(0, 'rgba(200,235,255,0)'); g.addColorStop(1, `rgba(215,240,255,${.5 * a})`);
+      g.addColorStop(0, `rgba(${c},0)`); g.addColorStop(1, `rgba(${c},${.45 * a})`);
       ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-      const ic = fxGet('frost', '225,245,255');
+      const ic = null;   // 原来四角贴结霜图，去掉冰的外观后不贴
       if (ic) { ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .5 * a; for (const [x, y, s] of [[0, 0, 200], [W, 0, 200], [0, H, 220], [W, H, 220], [W / 2, 0, 160], [W / 2, H, 160], [0, H / 2, 170], [W, H / 2, 170]]) ctx.drawImage(ic, x - s / 2, y - s / 2, s, s); }
     };
     return f;
@@ -4515,25 +4518,31 @@ const ULT_FX = {
     f.drw = () => {
       const cx = P.x, cy = P.y + HIT_OY; ctx.globalCompositeOperation = 'lighter';
       if (f.t < .32) { const k = f.t / .3; drawGlow(cx, cy, 40 + 90 * k, c, .5 + .5 * k); drawGlow(cx, cy, 14 + 30 * k, '255,255,255', .9); }
-      const nv = fxGet('nova', c), fl = fxGet('flare', '240,255,210');
+      const nv = fxGet('nova', c), fl = fxGet('flare', rgbMix(c, '255,255,255', .7));
       for (const r of f.rings) { const k = (f.t - r.t0) / .5; if (k <= 0 || k > 1.6 || !nv) continue; ctx.globalAlpha = Math.max(0, 1 - k / 1.6); const s = r.R * 2.2; ctx.save(); ctx.translate(cx, cy); ctx.rotate(r.t0 * 7 + k); ctx.drawImage(nv, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; }
       if (f.t >= .3 && f.t < .7 && fl) { const k = (f.t - .3) / .4, s = 380 * (1 - k * .4); ctx.globalAlpha = 1 - k; ctx.save(); ctx.translate(cx, cy); ctx.rotate(k * 2); ctx.drawImage(fl, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; }
     };
     return f;
   },
-  // 苍雷 · 万雷天罚：天色一暗，24 道落雷接连劈在屏幕上的敌人身上
+  // 苍雷 · 万雷天罚：天色一暗，24 道光柱从天而降接连打在屏幕上的敌人身上（2026-11-23 去掉闪电外观，颜色跟战机）
   storm(P, d, c) {
-    const f = { t: 0, dur: 2.1, n: 0, order: [], lastT: -9 };
+    const f = { t: 0, dur: 2.1, n: 0, order: [], lastT: -9, cols: [] };
     f.upd = dt => {
       while (f.n < 24 && f.t > .12 + f.n * .058) {
         f.n++;
         if (!f.order.length) f.order = ultTargets(10).sort(() => Math.random() - .5);
         const t = f.order.pop(), ok = t && tAlive(t), q = ok ? tPos(t) : null, x = q ? q.x : rnd(30, W - 30), y = q ? q.y : rnd(90, H - 140);
-        subFx.push({ type: 'skybolt', x, y, t: 0, c });
+        f.cols.push({ x, y, t: 0 }); fxPart('nova', x, y, 120, .35, { c, g0: .3, g1: 1 });
         for (const o of ultTargets(10)) if (Math.hypot(o.x - x, o.y - y) < 70 + (o.r || 0)) ultHit(o, d * .34, c);
         f.lastT = f.t; shake = Math.max(shake, 7); if (f.n % 3 === 1) { noise(.3, .13, 3000); tone(90, .3, 'sawtooth', .05, -.5); }
       }
+      for (const q of f.cols) q.t += dt; f.cols = f.cols.filter(q => q.t < .35);
     };
+    f.drw = () => {   // 光柱：从屏幕上方打到目标，越来越细后消失
+      const bm = fxGet('beam', c), core = fxGet('beam', rgbMix(c, '255,255,255', .75)); ctx.globalCompositeOperation = 'lighter';
+      for (const q of f.cols) { const k = 1 - q.t / .35, top = q.y - 760; if (bm) { ctx.globalAlpha = k; fxStrip(bm, q.x, top, q.x, q.y, 60 * k + 6); fxStrip(core, q.x, top, q.x, q.y, 20 * k + 2); ctx.globalAlpha = 1; } drawGlow(q.x, q.y, 70 * k + 20, c, .9 * k); }
+    };
+    f.shift = (dx, dy) => { for (const q of f.cols) { q.x += dx; q.y += dy; } };
     f.under = () => { const a = f.t < .15 ? f.t / .15 : f.t > 1.7 ? Math.max(0, 1 - (f.t - 1.7) / .4) : 1; ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = `rgba(4,6,20,${.45 * a})`; ctx.fillRect(-W, -H, W * 3, H * 3); };
     f.over = () => { const fl = Math.max(0, 1 - (f.t - f.lastT) / .08); if (fl > 0) { ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(${c},${.12 * fl})`; ctx.fillRect(0, 0, W, H); } };
     return f;
@@ -5747,7 +5756,7 @@ function updateSubFx(dt) {
       if (f.t > .4) f.dead = true;
     } else if (f.type === 'pool') {
       if (f.t > f.life) { f.dead = true; continue; }
-      if ((f.tick -= dt) <= 0) { f.tick = .2; for (const e of enemies) if (e.hp > 0 && Math.hypot(e.x - f.x, e.y - f.y) < f.r + e.r * .5) { e.burn = Math.max(e.burn || 0, 1.2); e.burnLv = Math.max(e.burnLv || 0, f.lv); if (f.k) e.burnK = Math.max(e.burnK || 0, f.k); } }
+      if ((f.tick -= dt) <= 0) { f.tick = .2; for (const e of enemies) if (e.hp > 0 && Math.hypot(e.x - f.x, e.y - f.y) < f.r + e.r * .5) { e.burn = Math.max(e.burn || 0, 1.2); e.burnLv = Math.max(e.burnLv || 0, f.lv); if (f.k) e.burnK = Math.max(e.burnK || 0, f.k); if (f.c) e.burnC = f.c; } }
     } else if (f.type === 'strike') {
       if (f.t < f.delay) { if (tAlive(f.tgt)) { const p = tPos(f.tgt); f.x += (p.x - f.x) * Math.min(1, dt * 12); f.y += (p.y - f.y) * Math.min(1, dt * 12); } }
       else if (!f.fired) {
@@ -5775,9 +5784,9 @@ function drawSubFx() {
       // 熔岩火池：出现和消失时淡入淡出，表面闪烁
       const a = Math.min(1, f.t / .25) * Math.min(1, (f.life - f.t) / .5), fl = .85 + .15 * Math.sin(time * 14 + f.x);
       ctx.globalCompositeOperation = 'source-over';
-      const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r); g.addColorStop(0, `rgba(255,170,60,${.5 * a * fl})`); g.addColorStop(.6, `rgba(230,70,20,${.38 * a})`); g.addColorStop(1, 'rgba(120,20,0,0)');
+      const pc = f.c || '255,110,30', g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r); g.addColorStop(0, `rgba(${rgbMix(pc, '255,255,255', .35)},${.5 * a * fl})`); g.addColorStop(.6, `rgba(${pc},${.38 * a})`); g.addColorStop(1, `rgba(${rgbDark(pc, .45)},0)`);
       ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(f.x, f.y, f.r, f.r * .8, 0, 0, TAU); ctx.fill();
-      ctx.globalCompositeOperation = 'lighter'; drawGlow(f.x, f.y, f.r * 1.4, '255,120,40', .35 * a * fl);
+      ctx.globalCompositeOperation = 'lighter'; drawGlow(f.x, f.y, f.r * 1.4, pc, .35 * a * fl);
       continue;
     }
     if (f.type === 'pulse' && FX.nova) {
@@ -7034,7 +7043,7 @@ function drawWreck(w) {
 }
 function drawBurn(e) {
   ctx.globalCompositeOperation = 'lighter';
-  for (let i = 0; i < 2; i++) drawGlow(e.x + rnd(-e.r, e.r) * .5, e.y + rnd(-e.r, e.r) * .5 - 4, e.r * rnd(1.2, 2), Math.random() < .5 ? '255,110,30' : '255,190,80', .55);
+  const bc = e.burnC || '255,110,30'; for (let i = 0; i < 2; i++) drawGlow(e.x + rnd(-e.r, e.r) * .5, e.y + rnd(-e.r, e.r) * .5 - 4, e.r * rnd(1.2, 2), Math.random() < .5 ? bc : rgbMix(bc, '255,255,255', .4), .55);
   ctx.globalCompositeOperation = 'source-over';
 }
 
@@ -7199,13 +7208,13 @@ function fireFlame(dt, eff, rate, br) {
   }
   const x0 = P.x, y0 = P.y - (70 + eff) * K, range = Math.min(800, (140 + eff * 50) * (blue ? 1.6 : 1))   /* 射程每级 +50（原来 +90，5 级就够到刷怪圈，「射程短」不成立） */, half = (.09 + eff * .04) * (blue ? .75 : 1);
   const dps = (14 + eff * 6) * S.dmgMul * rate * (blue ? 1.5 : 1);
-  const cols = blue ? ['110,180,255', '225,240,255', '60,110,255'] : br === 'melt' ? ['255,60,15', '255,140,50', '150,10,0'] : ['255,100,25', '255,190,80', '200,30,10'];
+  const fc = LOOK.emis, cols = [fc, rgbMix(fc, '255,255,255', .5), rgbDark(fc, .6)];   // 火焰颜色 = 战机颜色（蓝焰 / 熔岩等进化换涂装后跟着变）
   const cones = [[x0, y0, -Math.PI / 2, range, half, 1]];
   if (eff >= 4) for (const s of [-1, 1]) cones.push([x0 + s * 30 * K, y0 + 60 * K, -Math.PI / 2 + s * .3, range * .55, half * .7, .45]);
   // LV1 火苗会断续闪烁
   const sputter = lv === 1 ? .55 + .45 * Math.sin(time * 23) * Math.sin(time * 7.3) : 1;
   P.flameFx = { cones, cols, lv, sputter, blue, life: .05 };
-  if (time - (P.poolAt ?? -9) >= POOL_CD) { P.poolAt = time; const d = range * .7; subFx.push({ type: 'pool', x: x0, y: y0 - d, r: 44 + eff * 6, t: 0, life: POOL_LIFE, lv: eff, tick: 0, k: S.dmgMul }); }   // 熔岩火池
+  if (time - (P.poolAt ?? -9) >= POOL_CD) { P.poolAt = time; const d = range * .7; subFx.push({ type: 'pool', x: x0, y: y0 - d, r: 44 + eff * 6, t: 0, life: POOL_LIFE, lv: eff, tick: 0, k: S.dmgMul, c: fc }); }   // 熔岩火池
   for (const [cx, cy, ang, rg, hf, w] of cones) {
     const main = w > .9, n = main ? [1, 2, 3, 5, 7, 9, 11][lv] : 2;
     for (let i = 0; i < n; i++) {
@@ -7233,7 +7242,7 @@ function fireFlame(dt, eff, rate, br) {
         const hit0 = t.ref.hit;
         applyHit(t, dps * w * sputter * (1 - .55 * Math.min(1, d / rg)) * dt, t.x, t.y + reach * .4, cols[0], dt);
         t.ref.hit = hit0;
-        t.ref.burn = 3; t.ref.burnLv = eff; t.ref.burnK = S.dmgMul; scorch(t, cx, cy, dt);
+        t.ref.burn = 3; t.ref.burnLv = eff; t.ref.burnK = S.dmgMul; t.ref.burnC = fc; scorch(t, cx, cy, dt);
         break;
       }
     }
@@ -7324,31 +7333,40 @@ const CHAR_T = makeCanvas(660, 460, () => { }), CHAR_G = CHAR_T.getContext('2d')
 // 把焦痕画进临时画布，再用贴图本身做遮罩，保证只黑在机体上
 function charPatch(spr, x, y, w, h, spots, mapX = 1, ox = 0, oy = 0) {
   if (!spots || !spots.length) return;
-  const S = Math.min(3, 660 / w, 460 / h), pw = Math.ceil(w * S), ph = Math.ceil(h * S), g = CHAR_G;
-  g.clearRect(0, 0, pw, ph);
-  for (const s of spots) { const r = s.r * 1.6 * S, px = ((s.x - ox) * mapX - x) * S, py = (s.y - oy - y) * S; g.drawImage(CHAR_BLOBS[s.v], px - r, py - r, r * 2, r * 2); }
-  g.globalCompositeOperation = 'destination-in';
-  g.drawImage(spr, 0, 0, pw, ph);
-  g.globalCompositeOperation = 'source-over';
-  ctx.drawImage(CHAR_T, 0, 0, pw, ph, x, y, pw / S, ph / S);
+  // 2026-11-23（熔火卡顿）：以前每帧给每个烧焦的物体重新合成一张 3 倍分辨率的焦痕图，100 只在烧时每帧要十几毫秒。
+  // 现在每个物体缓存一张 2 倍分辨率的焦痕图层，贴图换了、焦痕块数变了或过了 0.12 秒才重画（焦痕长得很慢，看不出区别）
+  const S = Math.min(2, 440 / w, 300 / h), pw = Math.ceil(w * S), ph = Math.ceil(h * S);
+  const key = x + '|' + y + '|' + w + '|' + h + '|' + mapX + '|' + ox + '|' + oy, cache = spots._cc || (spots._cc = {});
+  let c = cache[key];
+  if (!c || c.spr !== spr || c.n !== spots.length || time - c.t > .12 || time < c.t) {
+    if (!c || c.cv.width !== pw || c.cv.height !== ph) { c = cache[key] = { cv: document.createElement('canvas') }; c.cv.width = pw; c.cv.height = ph; c.g = c.cv.getContext('2d'); }
+    const g = c.g;
+    g.clearRect(0, 0, pw, ph);
+    for (const s of spots) { const r = s.r * 1.6 * S, px = ((s.x - ox) * mapX - x) * S, py = (s.y - oy - y) * S; g.drawImage(CHAR_BLOBS[s.v], px - r, py - r, r * 2, r * 2); }
+    g.globalCompositeOperation = 'destination-in';
+    g.drawImage(spr, 0, 0, pw, ph);
+    g.globalCompositeOperation = 'source-over';
+    c.spr = spr; c.n = spots.length; c.t = time;
+  }
+  ctx.drawImage(c.cv, x, y, pw / S, ph / S);
 }
 // 焦痕 + 蔓延前沿的余烬（火灭后余烬熄灭）
 function drawChar(e, spr, b, bw, bh) {
   if (!e.spots) return;
   charPatch(spr, b.x0, b.y0, bw, bh, e.spots);
-  if (e.burn > 0) emberFx(e.spots, e.r * 1.1);
+  if (e.burn > 0) emberFx(e.spots, e.r * 1.1, e.burnC);
 }
-function emberFx(spots, limit) {
+function emberFx(spots, limit, col = '255,100,25') {
   ctx.globalCompositeOperation = 'lighter';
   for (const s of spots) for (let i = 0; i < 2; i++) {
     const a = s.seed + i * 2.6 + time * .8, x = s.x + Math.cos(a) * s.r * .9, y = s.y + Math.sin(a) * s.r * .9;
-    if (Math.hypot(x, y) < limit) drawGlow(x, y, 4 + s.r * .35, '255,100,25', .35 + .55 * Math.max(0, Math.sin(time * 8 + s.seed + i)));
+    if (Math.hypot(x, y) < limit) drawGlow(x, y, 4 + s.r * .35, col, .35 + .55 * Math.max(0, Math.sin(time * 8 + s.seed + i)));
   }
   ctx.globalCompositeOperation = 'source-over';
 }
 // 首领与炮台的灼烧
 function burnBoss(b, dt) {
-  const fire = (x, y) => addPart({ t: 'glow', x, y, vx: rnd(-10, 10), vy: rnd(-70, -30), life: .5, max: .5, size: rnd(14, 28), c: Math.random() < .5 ? '255,110,30' : '255,190,80' });
+  const fire = (x, y) => { const bc = b.burnC || '255,110,30'; addPart({ t: 'glow', x, y, vx: rnd(-10, 10), vy: rnd(-70, -30), life: .5, max: .5, size: rnd(14, 28), c: Math.random() < .5 ? bc : rgbMix(bc, '255,255,255', .4) }); };
   if (b.burn > 0) {
     b.burn -= dt; charTick(b, dt, 150, 70);
     const d = burnDps(b.burnLv, b.burnK) * dt, h = b.hit; damageBoss(d); b.hit = h;
