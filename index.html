@@ -1049,6 +1049,8 @@ function demoOn() { return DEMO && state === 'title'; }
 // 闯关模式暂时隐藏（2026-11-22 决定先不开发）：入口都关掉，代码全部保留。
 // 改成 true 就恢复：主界面的"闯关"按钮和 X 键，以及机库"出击"、主界面回车直接进闯关（关掉时这两个改为进生存模式）
 const STAGE_MODE_ON = false;
+// 手机上不显示键盘提示（[Enter]、[J]、空格这些）：触屏设备一开始就隐藏；手指碰屏幕时隐藏，按键盘时再显示
+let touchUI = (() => { try { return matchMedia('(pointer: coarse)').matches; } catch (e) { return false; } })();
 function startDefault() { if (STAGE_MODE_ON) startGame(); else startSurvival(); }
 try { best = +localStorage.getItem('starFighterBest') || 0; } catch (e) { }
 let stage, score, dispScore, player, pBullets, eBullets, enemies, pickups, parts, texts, boss, holes = [], subFx = [];
@@ -1270,9 +1272,10 @@ function survWaveStep(dt) {
   else { w.n++; w.on = true; w.t = SURV_WAVE_ON(w.n); floatText(W / 2, 96, `第 ${w.n} 波`, 20, '#ffd28a', 1.8); tone(330, .2, 'sawtooth', .04); tone(440, .25, 'sawtooth', .04, 0, .15); }
 }
 // 终结潮：一来敌人就 +DOOM_LV 级，之后每 DOOM_LV_T 秒再 +1 级；刷得是平时的 3 倍多、每 3 秒一只精英，场上上限放宽到 220。
-// 血量还按时间指数上涨（每秒 ×DOOM_HP，约 16 秒翻一倍），敌人越追越快（一来 1.3 倍，最多 2.2 倍）、远程占一半、刷得更近；期间不出首领（首领死时会清场），不再升级（不弹选卡）——再强的配置也撑不了太久；
+// 敌人的血量、移速、攻击都按时间叠乘上涨（每秒 ×DOOM_HP = 1.05，约 14 秒翻一倍；移速一来就 1.3 倍）、远程占一半、刷得更近；期间不出首领（首领死时会清场），不再升级（不弹选卡）——再强的配置也撑不了太久；
 // 「生存最久」记的就是撑到最后的总时间
-const DOOM_LV = 4, DOOM_LV_T = 4, DOOM_HP = 1.045;
+const DOOM_LV = 4, DOOM_LV_T = 4, DOOM_HP = 1.05, DOOM_SPD_MAX = 8;
+const doomK = () => survDoom ? Math.pow(DOOM_HP, survDoom.t) : 1;   // 终结潮倍数：每秒在上一秒基础上 +5%（10 秒 1.6 倍、20 秒 2.7 倍、30 秒 4.3 倍）
 function startDoom(captured) {
   if (survDoom) return;
   survDoom = { t: 0, captured }; survWave.on = true; survEliteT = 2;
@@ -2646,8 +2649,8 @@ function drawEnemyLevels() {
   ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = `bold 10px ${FONT}`; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)';
   for (const e of enemies) {
     if (!e.elv || e.hp <= 0 || e.x < -40 || e.x > W + 40 || e.y < -40 || e.y > H + 40) continue;
-    const d = e.elv - (e.lvBase || e.elv); if (d < 1 && !e.champ) continue;
-    const c = e.champ ? '#ffd23f' : d >= 3 ? '#d29bff' : '#8fd0ff', t = 'Lv' + e.elv, y = e.y - e.r - 9;
+    if (!e.champ && !e.elite) continue;   // 只给精英（紫）和冠军（金）标等级，普通敌人不标
+    const c = e.champ ? '#ffd23f' : '#d29bff', t = 'Lv' + e.elv, y = e.y - e.r - 9;
     ctx.strokeText(t, e.x, y); ctx.fillStyle = c; ctx.fillText(t, e.x, y);
   }
   ctx.restore();
@@ -2659,7 +2662,7 @@ function survSpawn(type, a, elite) {
   // 敌人等级：基础等级随存活时间上涨（每 30 秒 +1，越靠后的星区起点越高），个体再随机高 0–5 级；
   // 血量按等级成长（每级 +17%），经验跟着血量走。精英个体 +3 级、血量再翻倍，带金色光环
   const e = enemies[enemies.length - 1], base = survBaseLv();
-  e.champ = !elite && survT > 60 && Math.random() < SURV_CHAMP;
+  e.champ = !elite && survT > 60 && Math.random() < SURV_CHAMP; e.elite = !!elite;
   e.lvBase = base; e.elv = base + lvRoll() + (elite ? 2 : 0) + (e.champ ? 3 : 0);
   const k = lvHpK(e.elv) * (elite ? 1.2 : 1) * (e.champ ? 2 : 1) * (survDoom ? Math.pow(DOOM_HP, survDoom.t) : 1);   // 终结潮：血量按时间指数上涨
   e.hp *= k; e.maxHp *= k; e.fireT = rnd(1.2, 2.6);
@@ -2693,7 +2696,7 @@ function survEnemyMove(e, edt) {
   const act = SURV_ACT[e.type];
   if (act && act(e, d, dx, dy, edt)) { e.vx *= .85; e.vy *= .85; fly(); e.fx = dx; e.fy = dy; return; }
   const m = SURV_MOVE[e.type] || [70, 0];
-  let sp = m[0] * SURV_ENEMY_SPEED * (e.champ ? 1.15 : 1) * (e.lockT > 0 ? .15 : 1) * (survDoom ? Math.min(2.2, 1.3 + survDoom.t / 100) : 1);   // 终结潮：敌人越追越快
+  let sp = m[0] * SURV_ENEMY_SPEED * (e.champ ? 1.15 : 1) * (e.lockT > 0 ? .15 : 1) * (survDoom ? Math.min(DOOM_SPD_MAX, 1.3 * doomK()) : 1);   // 终结潮：一来 1.3 倍，之后每秒 ×1.05（封顶 8 倍，只为防止快到穿过判定）
   if (e.type === 'burster' && d < 150) sp *= 1.9;
   let vx = tx * sp, vy = ty * sp;
   if (m[1] && d < m[1]) { const s = e.ph > Math.PI ? 1 : -1, back = (m[1] - d) / m[1]; vx = (-ty * s * .85 - tx * back) * sp; vy = (tx * s * .85 - ty * back) * sp; }
@@ -2893,7 +2896,7 @@ const WEAPONS = {
 };
 const WEAPON_IDS = Object.keys(WEAPONS);
 // 武器平衡系数（装备没有稀有度了，强弱靠这里拉平）
-const WEAPON_BAL = { vulcan: 1.3, laser: 1, thunder: .75, wave: .6, flame: 1.8 };
+const WEAPON_BAL = { vulcan: 1.55, laser: 1.6, thunder: 2.2, wave: .65, flame: .5 };   // 2026-11-22 加弱点后重新拉平（对照局：固定通用卡、等级按时间升）
 const WING_BAL = { gun: 1, seeker: 1, lance: 1, scatter: 1.2, guard: 2, tesla: .4, rocket: 1, hole: 1, strike: 1 };
 // 伤害比例（2026-11-22）：主武器约六成、僚机约三成、专属约一成。僚机射速和主武器同一条曲线（前期弱、后期强）；
 // WING_K / MAIN_K 是两条线的整体系数，按 12 个种子对比调到和有副武器时持平（第 12 波首领用时、打不掉首领的局数）
@@ -2941,8 +2944,8 @@ function weaponLabel() { const b = branchOf(); return b ? BRANCHES[player.weapon
 const CASH = { id: 'cash', name: '能量补给', icon: '能', rar: 0, max: 999, noStack: true, desc: '能量充满', apply: () => { odAdd(100, true); } };
 const UP_BY_ID = Object.fromEntries(UPGRADES.concat(CASH).map(u => [u.id, u]));
 // 每局最多带 UP_KINDS 种强化（主炮 / 维修 / 僚机支援不算——僚机卡顶替了原来的副武器卡，也不占名额）：带满以后只出已有的那几种，不能把所有强化都拿全。
-// 没有东西可选的升级，每级改给 SURPLUS_CRYSTAL 颗星晶
-const UP_KINDS = 8, SURPLUS_CRYSTAL = 5, WING_CARD_W = 2;
+// 没有东西可选的升级直接跳过（以前改给星晶，2026-11-22 去掉）
+const UP_KINDS = 8, WING_CARD_W = 2;
 const upKinds = P => Object.keys(P.ups).filter(id => P.ups[id] > 0 && id !== 'wing').length;
 // 选卡界面刚弹出的 CHOICE_LOCK 秒内不接受点击（卡片一张张亮起来）：连升好几级时不会一闪而过、误点下一轮
 const CHOICE_LOCK = .5;
@@ -3104,10 +3107,9 @@ function synCheck() {
   }
 }
 function openChoice() {
-  // 没有可选的强化了（都拿满了）：这一级改给星晶，不弹选卡界面
+  // 没有可选的强化了（都拿满了）：这一级跳过，不弹选卡界面（以前改给星晶，击毁不再出星晶后一起去掉）
   let extra = 0;
   for (; choiceQueue.length; choiceQueue.shift()) { choices = rollChoices(choiceQueue[0]); if (choices.length) break; if (SURV && choiceQueue[0] !== 'evo') extra++; }
-  if (extra) { const c = extra * SURPLUS_CRYSTAL; save.crystals += c; player.earned = (player.earned || 0) + c; persist(); floatText(player.x, player.y - 60, `星晶 +${c}`, 16, '#bff4ff', 1.4); }
   if (!choiceQueue.length) return;
   state = 'choose'; drag = null; choiceT = time;
   if (choiceQueue[0] === 'evo') { tone(392, .2, 'sawtooth', .06); tone(784, .4, 'triangle', .08, 0, .15); }
@@ -3150,7 +3152,7 @@ function togglePause() {
 // ================= 输入 =================
 const keys = {};
 addEventListener('keydown', e => {
-  keys[e.code] = true; initAudio();
+  keys[e.code] = true; initAudio(); touchUI = false;
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   if (state === 'codex') { if (e.code === 'Escape' || e.code === 'KeyL' || e.code === 'Enter') state = 'title'; if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') codexPage = (codexPage + (e.code === 'ArrowLeft' ? CODEX.length - 1 : 1)) % CODEX.length; return; }
   if (state === 'title' && sysOpen) { if (e.code === 'Escape') sysOpen = false; else if (e.code === 'KeyL') { sysOpen = false; state = 'codex'; } return; }
@@ -3191,7 +3193,7 @@ addEventListener('keyup', e => { keys[e.code] = false; });
 let drag = null;
 function toLocal(e) { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H }; }
 cv.addEventListener('pointerdown', e => {
-  initAudio();
+  initAudio(); if (e.pointerType !== 'mouse') touchUI = true;
   const p = toLocal(e);
   if (UI_COL.has(state)) p.x -= uiOff();   // 这些界面画在中间那条栏里
   // GM 面板只用 G 键呼出（右下角按钮已去掉）
@@ -3262,7 +3264,19 @@ function hitSpark(x, y, rgb = '120,220,255') {
   else addPart({ t: 'glow', x, y, vx: 0, vy: -40, life: .12, max: .12, size: 18, c: rgb });
   if (Math.random() < .4) { const a = rnd(-2.6, -.5); addPart({ t: 'spark', x, y, vx: Math.cos(a) * 200, vy: Math.sin(a) * 200, life: .2, max: .2, c: rgb }); }
 }
-function floatText(x, y, txt, size = 14, color = '#fff', life = .9) { if (demoSilent) return; texts.push({ x, y, txt, size, color, life, max: life }); }
+function floatText(x, y, txt, size = 14, color = '#fff', life = .9) { if (demoSilent) return; texts.push({ x, y, txt, size, color, life, max: life, nw: true }); }
+// 新文字要排队多久：会压住正在显示（或排队中）的文字时，等那条往上飘开（文字每秒上飘 30）或消失再出现
+function textSlot(t) {
+  ctx.font = `bold italic ${t.size}px ${FONT}`; t.w = ctx.measureText(t.txt).width;
+  let dl = 0;
+  for (const e of texts) {
+    if (e === t || e.nw || e.life <= 0 || Math.abs(e.x - t.x) > (e.w + t.w) / 2 + 6) continue;
+    const gap = (e.size + t.size) / 2 + 4, ed = e.dl || 0;
+    if (e.y - t.y >= gap) continue;   // 旧的在下方够远：一起往上飘，距离不变
+    dl = Math.max(dl, Math.min(ed + (e.y - t.y + gap) / 30, ed + e.life));
+  }
+  return Math.min(dl, 6);
+}
 
 // ================= 玩家 =================
 // LV1 只有一道细小的光弹，逐级增加弹道（LV6 = 满级 + 超载）
@@ -3679,7 +3693,7 @@ function skyBolt(t, dmg, col = '150,165,255') {
   shake = Math.max(shake, 5); noise(.35, .16, 3200); tone(90, .4, 'sawtooth', .06, -.5);
 }
 // 熔火喷流 · 熔岩火池：喷火时每 1.4 秒在火焰前端留下一片火池，持续 3 秒，踩进去的敌人被点燃
-const POOL_CD = 1.4, POOL_LIFE = 3;
+const POOL_CD = 1.4, POOL_LIFE = 3, FLAME_ON = 4, FLAME_OFF = 1;
 // ================= 虚空镰刃：切开空间 =================
 // 每 1.8 秒，主镰刃飞出 170 像素后在原地撕开一道空间裂缝（约 1 秒）：
 // 血量低（不到三成，或少于镰刃 3 刀的伤害）的敌人被吸进裂缝直接消失（照样算击杀）；其他敌人被定住 1 秒。首领和星球据点不受影响
@@ -3738,7 +3752,9 @@ function drawStuns() {
   ctx.globalAlpha = 1;
   ctx.restore();
 }
-function mkWave(x, y, vx, vy, o) { return Object.assign({ x, y, vx, vy, wave: true, hits: new Set(), w: 34 }, o); }
+// 弱点「砍得越多飞得越慢」：每砍中一个目标速度 ×WAVE_SLOW，降到 WAVE_MIN 以下就消散（大约能砍 10 个）
+const WAVE_SLOW = .88, WAVE_MIN = .3;
+function mkWave(x, y, vx, vy, o) { return Object.assign({ x, y, vx, vy, wave: true, hits: new Set(), w: 34, sp: 1 }, o); }
 function fireWave(eff, rate, br) {
   const P = player, S = P.s, shock = br === 'shock', helix = br === 'helix', boomer = br === 'boomer';
   P.fireT += (shock ? .42 : .3) / rate;
@@ -3758,6 +3774,8 @@ function fireThunder(eff, rate, br) {
   const n = 1 + Math.floor(eff / 2) + S.spread, dmg = (2 + eff * .5) * S.dmgMul * (exec ? 1.15 : 1);
   const col = thunderCol(br);
   const tg = nearestTargets(P.x, P.y - 30, n, 520), all = targets();
+  // 弱点「多目标分摊」：这一轮锁定了几个不同的敌人，伤害就平分成几份（只锁到 1 个时全额，几道都打它）；天雷不分摊
+  const kT = new Set(tg.map(o => o.ref)).size || 1, dmgT = dmg / kT;
   if (tg[0] && time - (P.boltAt ?? -9) >= SKYBOLT_CD) { P.boltAt = time; skyBolt(tg[0], dmg * 6, col); }   // 天雷
   if (tg[0]) P.mainTarget = tg[0];
   // 闪电从机头的放电点打出去，起点一直钉在机头上。持续时间跟着射速走：
@@ -3775,7 +3793,7 @@ function fireThunder(eff, rate, br) {
       if (Math.min(dM, dE) < dN * .8) boltFx(dE < dM ? T0.x : mx, dE < dM ? T0.y : my, t.x + jx, t.y + jy, col, { par: trunk, at: dE < dM ? 1 : .5, life, tg: t, jx, jy, w: .8, forks: 1 });
       else boltFx(nx, ny, t.x + jx, t.y + jy, col, { nose: true, life, tg: t, jx, jy, w: .85, forks: 1 });
     }
-    if (zap(t, dmg, col, br)) killed = true;
+    if (zap(t, dmgT, col, br)) killed = true;
     if (net) {
       const seen = new Set([t.ref]); let frontier = [t], jumps = 4 + eff;
       let hop = 0;
@@ -3783,7 +3801,7 @@ function fireThunder(eff, rate, br) {
         const next = []; hop++;
         for (const f of frontier) for (const o of all) {
           if (jumps <= 0 || seen.has(o.ref) || o.ref.hp <= 0) continue;
-          if (Math.hypot(o.x - f.x, o.y - f.y) < 150) { seen.add(o.ref); jumps--; boltFx(f.x, f.y, o.x, o.y, col, { life, tg: o, w: .7, forks: 0, delay: hop * .035 }); if (zap(o, dmg * .7, col, br)) killed = true; next.push(o); }
+          if (Math.hypot(o.x - f.x, o.y - f.y) < 150) { seen.add(o.ref); jumps--; boltFx(f.x, f.y, o.x, o.y, col, { life, tg: o, w: .7, forks: 0, delay: hop * .035 }); if (zap(o, dmgT * .7, col, br)) killed = true; next.push(o); }
         }
         frontier = next;
       }
@@ -3969,6 +3987,7 @@ function hurtPlayer(dmg = 1) {
     return;
   }
   if (PLANET) for (const q of planets) if (q.inOrbit) q.hurt = true;   // 占领结算的「无伤」判定
+  if (survDoom) dmg = Math.max(1, Math.round(dmg * doomK()));   // 终结潮：敌人攻击每秒 ×1.05，一下打掉的护甲格数 = 倍数四舍五入
   P.armor -= dmg; P.inv = 1.6; shake = 10; redFlash = .45; combo = 0; bloodScreen = 1.2;
   // 僚机：真掉护甲每 2 次损毁 1 架（护盾 / 闪避 / 闪现挡下的不算）；没有僚机时不计数
   if (P.s.wingmen > 0) { if ((P.wingHits = (P.wingHits || 0) + 1) >= 2) { P.wingHits = 0; loseWingman(); } } else P.wingHits = 0;
@@ -4157,10 +4176,10 @@ function updateEnemies(dt) {
     if (e.burn > 0 && e.hp > 0) {
       const fb = player.weapon === 'flame' ? player.branch.flame : null;
       e.burn -= dt; charTick(e, dt, e.r * (e.type === 'swarm' || e.type === 'acidbat' ? 2 : 1.3), e.r);
-      const bd = burnDps(e.burnLv) * dt; e.hp -= bd; burnNumber(e, e.x, e.y - e.r, bd, dt);
+      const bd = burnDps(e.burnLv, e.burnK) * dt; e.hp -= bd; burnNumber(e, e.x, e.y - e.r, bd, dt);
       if (Math.random() < dt * 6) { const sp = e.spots[Math.random() * e.spots.length | 0]; addPart({ t: 'smoke', x: e.x + sp.x, y: e.y + sp.y, vx: rnd(-10, 10), vy: -30, life: .7, max: .7, size: e.r * .4, c: '' }); }
       if (fb === 'melt') e.slow = Math.max(e.slow || 0, .15);
-      if (fb === 'wild' && (e.spreadT = (e.spreadT || 0) - dt) <= 0) { e.spreadT = .5; for (const o of enemies) if (o !== e && o.hp > 0 && !(o.burn > 0) && Math.hypot(o.x - e.x, o.y - e.y) < 75) { o.burn = 3; o.burnLv = e.burnLv; addPart({ t: 'glow', x: (o.x + e.x) / 2, y: (o.y + e.y) / 2, vx: 0, vy: -20, life: .3, max: .3, size: 18, c: '255,150,40' }); } }
+      if (fb === 'wild' && (e.spreadT = (e.spreadT || 0) - dt) <= 0) { e.spreadT = .5; for (const o of enemies) if (o !== e && o.hp > 0 && !(o.burn > 0) && Math.hypot(o.x - e.x, o.y - e.y) < 75) { o.burn = 3; o.burnLv = e.burnLv; o.burnK = e.burnK; addPart({ t: 'glow', x: (o.x + e.x) / 2, y: (o.y + e.y) / 2, vx: 0, vy: -20, life: .3, max: .3, size: 18, c: '255,150,40' }); } }
       if (e.hp <= 0) killEnemy(e); else if (Math.random() < dt * 8) addPart({ t: 'glow', x: e.x + rnd(-e.r, e.r) * .5, y: e.y, vx: 0, vy: -40, life: .4, max: .4, size: 12, c: '255,130,40' }); }
     if (canFire && !(e.stun > 0) && (SURV ? e.x > -10 && e.x < W + 10 && e.y > -10 && e.y < H + 10 : e.y > 10 && e.y < H * .7)) {
       if (SURV && (SURV_MELEE.has(e.type) || SURV_SPECIAL.has(e.type))) { /* 生存模式：近战型不开火，特殊型用自己的攻击 */ }
@@ -4781,7 +4800,7 @@ function updateBullets(dt) {
     }
     if (b.wave) {
       b.w = Math.min(b.grow, b.w + 160 * dt);
-      if (b.rift && (b.trav = (b.trav || 0) + Math.hypot(b.vx, b.vy) * dt) > 170) { b.rift = false; spawnRift(b); }
+      if (b.rift && (b.trav = (b.trav || 0) + Math.hypot(b.vx, b.vy) * dt * (b.sp ?? 1)) > 170) { b.rift = false; spawnRift(b); }
       if (b.boomer && b.hx !== undefined) {
         // 生存模式：沿机头方向减速、折返，回程时向玩家所在的中线收拢
         b.vx -= b.hx * (b.dec || 900) * dt; b.vy -= b.hy * (b.dec || 900) * dt;
@@ -4799,8 +4818,9 @@ function updateBullets(dt) {
       const a = Math.atan2(b.vx, -b.vy);
       for (const s of [-1, 1]) { const c = mkShot(b.x, b.y, a + s * .2, b.dmg * .6); c.pierce = b.pierce; pBullets.push(c); }
     }
-    b.x += b.vx * dt; b.y += b.vy * dt;
-    if (b.helix && b.cx !== undefined) { b.ht += dt; b.cx += b.vx * dt; b.cy += b.vy * dt; const o = b.helix * Math.sin(b.ht * 9) * 46; b.x = b.cx - b.hy * o; b.y = b.cy + b.hx * o; }
+    const spd = b.wave ? b.sp ?? 1 : 1;   // 镰刃砍中敌人后变慢
+    b.x += b.vx * dt * spd; b.y += b.vy * dt * spd;
+    if (b.helix && b.cx !== undefined) { b.ht += dt; b.cx += b.vx * dt * spd; b.cy += b.vy * dt * spd; const o = b.helix * Math.sin(b.ht * 9) * 46; b.x = b.cx - b.hy * o; b.y = b.cy + b.hx * o; }
     else if (b.helix) { b.ht += dt; b.x = b.x0 + b.helix * Math.sin(b.ht * 9) * 46; }
     // 屏幕折射：边缘反弹
     if (b.bounce > 0) {
@@ -4814,13 +4834,16 @@ function updateBullets(dt) {
       const whx = b.hx ?? 0, why = b.hy ?? -1;
       if (b.shock) for (const eb of eBullets) { if (eb.dead) continue; const rx = eb.x - b.x, ry = eb.y - b.y; if (Math.abs(-rx * why + ry * whx) < b.w / 2 && Math.abs(rx * whx + ry * why) < 16) { eb.dead = true; hitSpark(eb.x, eb.y, b.c); } }
       for (const t of targets()) {
+        if (b.sp < WAVE_MIN) break;
         if (b.hits.has(t.ref)) continue;
         const reach = tReach(t), rx = t.x - b.x, ry = t.y - b.y;
         if (Math.abs(-rx * why + ry * whx) < b.w / 2 + reach && Math.abs(rx * whx + ry * why) < reach + 10) {
-          b.hits.add(t.ref); applyHit(t, b.dmg, b.hx !== undefined ? t.x : clamp(b.x, t.x - reach, t.x + reach), t.y, b.c);
+          b.hits.add(t.ref); applyHit(t, b.dmg, b.hx !== undefined ? t.x : clamp(b.x, t.x - reach, t.x + reach), t.y, b.c); b.sp = (b.sp ?? 1) * WAVE_SLOW;
           if (b.shock && t.kind === 'e' && t.ref.type !== 'heavy') { if (b.hx !== undefined) { t.ref.x += b.hx * 28; t.ref.y += b.hy * 28; } else { t.ref.y -= 28; if (t.ref.stopY !== undefined) t.ref.stopY = Math.max(40, t.ref.stopY - 20); } }
         }
       }
+      // 慢到一定程度就消散；还没切开的空间裂缝就在消散处切开
+      if (b.sp < WAVE_MIN) { if (b.rift) { b.rift = false; spawnRift(b); } b.dead = true; addPart({ t: 'glow', x: b.x, y: b.y, vx: 0, vy: 0, life: .3, max: .3, size: Math.max(40, b.w), c: '190,120,255' }); }
       continue;
     }
     // 孢子雷可以被击落
@@ -4875,7 +4898,9 @@ function updateParts(dt) {
     else { p.vx *= .94; p.vy *= .94; }
   }
   parts = parts.filter(p => p.life > 0);
-  for (const t of texts) { t.life -= dt; t.y -= 30 * dt; }
+  // 漂浮文字排队：短命的小提示排太久（2.5 秒以上）就直接不显示了
+  for (const t of texts) if (t.nw) { t.nw = false; t.dl = textSlot(t); if (t.dl > 2.5 && t.max < 1.5) t.life = 0; }
+  for (const t of texts) { if (t.dl > 0) { t.dl -= dt; continue; } t.life -= dt; t.y -= 30 * dt; }
   texts = texts.filter(t => t.life > 0);
 }
 
@@ -5286,11 +5311,11 @@ function gearEffect(k) {
   return s > 1 ? `开局自带 1 架 · 伤害 +${10 * (s - 1)}%` : '开局自带 1 架';
 }
 function fighterEffect(id) { const s = save.fighters[id] || 1; return `专属技能 +${10 * (s - 1)}% · 护甲 +${Math.floor((s - 1) / 2)}`; }
-// 本局结算：每过一关 +STAGE_REWARD，结束时按击毁数再给（每击毁 KILLS_PER_CRYSTAL 架 1 颗；原来按分数，分数系统取消后改成这样）
-const KILLS_PER_CRYSTAL = 3;
+// 本局结算：首领 / 每过一关 +STAGE_REWARD；击毁不再给星晶（2026-11-22），终结潮每坚持 1 秒 +DOOM_CR
+const DOOM_CR = 5;   // 击毁不再给星晶（只有首领、占领、基地产出给）；终结潮每坚持 1 秒 +5
 const tierK = t => 1 + .4 * t;   // 难度阶梯：每高一档，本局星晶 +40%
 function rewardStage() { save.crystals += STAGE_REWARD; player.earned = (player.earned || 0) + STAGE_REWARD; persist(); }
-function rewardRun() { const r = Math.floor((player.kills || 0) / KILLS_PER_CRYSTAL * tierK(SURV ? runTier : 0)); save.crystals += r; player.earned = (player.earned || 0) + r; persist(); }
+function rewardRun() { const r = SURV && survDoom ? Math.floor(survDoom.t * DOOM_CR * tierK(runTier)) : 0; player.doomCr = r; if (capRes) capRes.doomCr = r; if (r) { save.crystals += r; player.earned = (player.earned || 0) + r; persist(); } }
 
 // ---------- 抽卡 ----------
 let gachaPool = 'f', gachaRes = null, gachaT = 0, gachaMsg = '', gachaMsgT = 0, hangarPick = null, uiRects = [];
@@ -5338,6 +5363,7 @@ function tintFrame(k, t) {
 }
 // 按钮文字：主文字用游戏字体；末尾的快捷键提示（如 [Enter]）用小一号的普通字体跟在后面；放不下时自动缩小字号
 function btnLabel(t, cx, cy, px, maxW, col, glow) {
+  if (touchUI) t = t.replace(/\s*\[[^\]]*\]/g, '');   // 手机上去掉所有 [按键] 提示
   const m = / (\[[^\]]+\])$/.exec(t), main = m ? t.slice(0, m.index) : t, key = m ? m[1] : '';
   let mw, kw, kp;
   for (; ; px--) {
@@ -5641,7 +5667,7 @@ function updateSubFx(dt) {
       if (f.t > .4) f.dead = true;
     } else if (f.type === 'pool') {
       if (f.t > f.life) { f.dead = true; continue; }
-      if ((f.tick -= dt) <= 0) { f.tick = .2; for (const e of enemies) if (e.hp > 0 && Math.hypot(e.x - f.x, e.y - f.y) < f.r + e.r * .5) { e.burn = Math.max(e.burn || 0, 1.2); e.burnLv = Math.max(e.burnLv || 0, f.lv); } }
+      if ((f.tick -= dt) <= 0) { f.tick = .2; for (const e of enemies) if (e.hp > 0 && Math.hypot(e.x - f.x, e.y - f.y) < f.r + e.r * .5) { e.burn = Math.max(e.burn || 0, 1.2); e.burnLv = Math.max(e.burnLv || 0, f.lv); if (f.k) e.burnK = Math.max(e.burnK || 0, f.k); } }
     } else if (f.type === 'strike') {
       if (f.t < f.delay) { if (tAlive(f.tgt)) { const p = tPos(f.tgt); f.x += (p.x - f.x) * Math.min(1, dt * 12); f.y += (p.y - f.y) * Math.min(1, dt * 12); } }
       else if (!f.fired) {
@@ -5858,7 +5884,7 @@ function drawGacha() {
     gem(x + 116, y + 29, 7); ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = ok ? '#e8fbff' : 'rgba(225,232,240,.85)'; ctx.fillText(String(c), x + 126, y + 30); ctx.textAlign = 'center';
     ctx.globalAlpha = 1;
   }
-  ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(190,230,255,.6)'; ctx.fillText(`星晶来源：${STAGE_MODE_ON ? '每过一关' : '击破首领'} +${STAGE_REWARD}，每击毁 ${KILLS_PER_CRYSTAL} 架敌机 +1`, W / 2, 582);
+  ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(190,230,255,.6)'; ctx.fillText(`星晶来源：${STAGE_MODE_ON ? '每过一关' : '击破首领'} +${STAGE_REWARD} · 占领星球 · 终结潮每秒 +${DOOM_CR}`, W / 2, 582);
   uiBtn(10, H - 58, 78, 40, '返回', 'back', { tint: 'steel' });
   uiBtn(96, H - 58, 110, 40, '机库 [H]', 'hangar');
   if (gachaMsgT > 0) { ctx.globalAlpha = Math.min(1, gachaMsgT * 2); ctx.fillStyle = 'rgba(60,10,20,.92)'; roundRect(W / 2 - 120, 610, 240, 34, 8); ctx.fill(); ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#ffb0b8'; ctx.fillText(gachaMsg, W / 2, 628); ctx.globalAlpha = 1; }
@@ -6893,6 +6919,18 @@ function drawBurn(e) {
 const sigOn = () => { const P = player; return !!P && !P.dead && (SURV ? P.plevel : P.lv) >= SKINS[curSkin].sig.unlock; };
 // 专属技能对主武器的加成：炽燃 / 黄金收割加伤害，极光超频加攻速
 function sigMainDmg() { const P = player, id = SKINS[curSkin].sig.id; if (!sigOn()) return 1; if (id === 'blaze') return 1 + (P.blz || 0); if (id === 'harvest') return 1 + .02 * (P.hvN || 0) * (P.sigK || 1); return 1; }
+// 专属技能在战斗里显示的状态：充能百分比 / 层数加成 / 进行中；on = 正在生效或已就绪，lock = 机师等级还不够
+function sigStatus() {
+  const P = player, sg = SKINS[curSkin].sig, id = sg.id, pct = Math.round(clamp(P.sigReady || 0, 0, 1) * 100) + '%';
+  if (!sigOn()) return { t: `Lv${sg.unlock} 解锁`, lock: true };
+  if (id === 'overclock') return P.sigOn > 0 ? { t: '超频中', on: true } : { t: pct };
+  if (id === 'blaze') return { t: '+' + Math.round((P.blz || 0) * 100) + '%', on: !!P.blzMax };
+  if (id === 'decoy') return P.decoy ? { t: '诱饵中', on: true } : { t: pct };
+  if (id === 'icewall') return P.wall ? { t: '冰墙中', on: true } : { t: pct };
+  if (id === 'reflect' || id === 'blink') return (P.sigReady || 0) >= 1 ? { t: '就绪', on: true } : { t: pct };
+  if (id === 'harvest') return { t: '+' + Math.round((P.hvN || 0) * 2 * (P.sigK || 1)) + '%', on: (P.hvN || 0) >= 20 };
+  return { t: pct };
+}
 function sigMainRate() { const P = player; return SKINS[curSkin].sig.id === 'overclock' && P.sigOn > 0 && sigOn() ? 1 + .6 * (P.sigK || 1) : 1; }
 function fireSig(dt, rate) {
   const P = player, S = P.s, sig = SKINS[curSkin].sig, K = P.sigK || 1;
@@ -7021,7 +7059,20 @@ function fireFlame(dt, eff, rate, br) {
   // 每一级外观都明显不同：
   // LV1 细小闪烁的火苗 → LV2 稳定火柱 + 火星 → LV3 白热内核 + 黑烟 → LV4 翻滚火球 + 侧喷嘴 → LV5 咆哮烈焰 + 热浪
   const P = player, S = P.s, blue = br === 'blue', K = SHIP_K, lv = Math.min(6, eff);
-  const x0 = P.x, y0 = P.y - (70 + eff) * K, range = Math.min(800, (140 + eff * 90) * (blue ? 1.6 : 1)), half = (.09 + eff * .04) * (blue ? .75 : 1);
+  // 弱点「过热熄火」：连续喷 FLAME_ON 秒后熄火 FLAME_OFF 秒（冒烟 + 嘶声），熄火时不烧敌人、不融子弹、不留火池；停火 0.3 秒以上就算冷却
+  if (time - (P.flameLast ?? -9) > .3) P.flameHeat = 0;
+  P.flameLast = time;
+  if (P.flameOff > 0) {
+    P.flameOff -= dt; P.flameFx = null;
+    if (Math.random() < dt * 16) addPart({ t: 'smoke', x: P.x + rnd(-5, 5), y: P.y - (70 + eff) * K, vx: rnd(-14, 14), vy: rnd(-60, -30), life: .7, max: .7, size: 7 + lv * 2, c: '' });
+    return;
+  }
+  if ((P.flameHeat = (P.flameHeat || 0) + dt) >= FLAME_ON) {
+    P.flameHeat = 0; P.flameOff = FLAME_OFF; P.flameFx = null; noise(.45, .05, 4200);
+    for (let i = 0; i < 8; i++) addPart({ t: 'smoke', x: P.x + rnd(-8, 8), y: P.y - (70 + eff) * K - rnd(0, 30), vx: rnd(-30, 30), vy: rnd(-90, -40), life: .8, max: .8, size: 8 + lv * 2, c: '' });
+    return;
+  }
+  const x0 = P.x, y0 = P.y - (70 + eff) * K, range = Math.min(800, (140 + eff * 50) * (blue ? 1.6 : 1))   /* 射程每级 +50（原来 +90，5 级就够到刷怪圈，「射程短」不成立） */, half = (.09 + eff * .04) * (blue ? .75 : 1);
   const dps = (14 + eff * 6) * S.dmgMul * rate * (blue ? 1.5 : 1);
   const cols = blue ? ['110,180,255', '225,240,255', '60,110,255'] : br === 'melt' ? ['255,60,15', '255,140,50', '150,10,0'] : ['255,100,25', '255,190,80', '200,30,10'];
   const cones = [[x0, y0, -Math.PI / 2, range, half, 1]];
@@ -7029,7 +7080,7 @@ function fireFlame(dt, eff, rate, br) {
   // LV1 火苗会断续闪烁
   const sputter = lv === 1 ? .55 + .45 * Math.sin(time * 23) * Math.sin(time * 7.3) : 1;
   P.flameFx = { cones, cols, lv, sputter, blue, life: .05 };
-  if (time - (P.poolAt ?? -9) >= POOL_CD) { P.poolAt = time; const d = range * .7; subFx.push({ type: 'pool', x: x0, y: y0 - d, r: 44 + eff * 6, t: 0, life: POOL_LIFE, lv: eff, tick: 0 }); }   // 熔岩火池
+  if (time - (P.poolAt ?? -9) >= POOL_CD) { P.poolAt = time; const d = range * .7; subFx.push({ type: 'pool', x: x0, y: y0 - d, r: 44 + eff * 6, t: 0, life: POOL_LIFE, lv: eff, tick: 0, k: S.dmgMul }); }   // 熔岩火池
   for (const [cx, cy, ang, rg, hf, w] of cones) {
     const main = w > .9, n = main ? [1, 2, 3, 5, 7, 9, 11][lv] : 2;
     for (let i = 0; i < n; i++) {
@@ -7057,7 +7108,7 @@ function fireFlame(dt, eff, rate, br) {
         const hit0 = t.ref.hit;
         applyHit(t, dps * w * sputter * (1 - .55 * Math.min(1, d / rg)) * dt, t.x, t.y + reach * .4, cols[0], dt);
         t.ref.hit = hit0;
-        t.ref.burn = 3; t.ref.burnLv = eff; scorch(t, cx, cy, dt);
+        t.ref.burn = 3; t.ref.burnLv = eff; t.ref.burnK = S.dmgMul; scorch(t, cx, cy, dt);
         break;
       }
     }
@@ -7094,7 +7145,9 @@ function drawFlameFx() {
   ctx.globalCompositeOperation = "lighter";
 }
 // ================= 灼烧：持续掉血 + 局部逐渐烧黑 =================
-const burnDps = lv => (4 + (lv || 1) * 2.5) * player.s.dmgMul;
+// 灼烧跟着点火那一刻的主武器倍率走（含武器平衡系数，这样调熔火的平衡系数时灼烧也跟着变）；BURN_K 让旧平衡（1.8）下的灼烧伤害保持原样。没记倍率的（必杀点的火）照旧
+const BURN_K = 1 / (1.8 * 1.3);
+const burnDps = (lv, k) => (4 + (lv || 1) * 2.5) * (k !== undefined ? k * BURN_K : player.s.dmgMul);
 function blackOf(c) { return c.black || (c.black = ART.silhouette(c, '#090503')); }
 function charOver(spr, x, y, w, h, a) { if (!a) return; ctx.globalAlpha = a; ctx.drawImage(blackOf(spr), x, y, w, h); ctx.globalAlpha = 1; }
 // 每 0.6 秒跳一次累计的灼烧伤害数字
@@ -7173,13 +7226,13 @@ function burnBoss(b, dt) {
   const fire = (x, y) => addPart({ t: 'glow', x, y, vx: rnd(-10, 10), vy: rnd(-70, -30), life: .5, max: .5, size: rnd(14, 28), c: Math.random() < .5 ? '255,110,30' : '255,190,80' });
   if (b.burn > 0) {
     b.burn -= dt; charTick(b, dt, 150, 70);
-    const d = burnDps(b.burnLv) * dt, h = b.hit; damageBoss(d); b.hit = h;
+    const d = burnDps(b.burnLv, b.burnK) * dt, h = b.hit; damageBoss(d); b.hit = h;
     burnNumber(b, b.x, b.y - 40, d, dt);
     if (Math.random() < dt * 24) { const s = b.spots[Math.random() * b.spots.length | 0]; fire(b.x + s.x, b.y + s.y); }
   }
   for (const t of b.turrets) if (t.burn > 0 && t.hp > 0) {
     t.burn -= dt; t.char = Math.min(1, (t.char || 0) + dt * .4); charTick(t, dt, 26, 26);
-    const d = burnDps(t.burnLv) * dt, h = t.hit; damageTurret(t, d); t.hit = h;
+    const d = burnDps(t.burnLv, t.burnK) * dt, h = t.hit; damageTurret(t, d); t.hit = h;
     if (t.hp > 0) { burnNumber(t, b.x + t.dx, b.y + t.dy - 30, d, dt); if (Math.random() < dt * 10) { const s = t.spots[Math.random() * t.spots.length | 0]; fire(b.x + t.dx + s.x, b.y + t.dy + s.y); } }
   }
 }
@@ -8257,6 +8310,7 @@ function drawWorld(demo) {
   // 漂浮文字
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (const t of texts) {
+    if (t.nw || t.dl > 0) continue;   // 还在排队
     ctx.globalAlpha = Math.min(1, t.life / t.max * 2);
     ctx.font = `bold italic ${t.size}px ${FONT}`;
     ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.strokeText(t.txt, t.x, t.y);
@@ -8511,7 +8565,7 @@ function drawChoice() {
       if (L.cur === 0) { ctx.textAlign = 'left'; ctx.font = `900 11px ${FONT}`; ctx.fillStyle = '#7dff9a'; ctx.fillText('NEW', x + 104 + nw + ctx.measureText(RAR[u.rar].n).width + 6, y + 27); }
     }
     ctx.textAlign = 'right'; ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.35)';
-    ctx.fillText('[' + (i + 1) + ']', x + w - 12, y + 24);
+    if (!touchUI) ctx.fillText('[' + (i + 1) + ']', x + w - 12, y + 24);
     ctx.textAlign = 'center';
     // 组合技提示（卡片上沿的小金标）：和哪张卡能合成什么、对方现在几级
     for (const sy of synOf(u.id)) {
@@ -8587,12 +8641,12 @@ function drawHUD() {
     ctx.strokeStyle = '#8fe6ff'; ctx.lineWidth = 1.5; ctx.fillStyle = i < player.s.shield ? '#8fe6ff' : 'transparent';
     ctx.beginPath(); ctx.arc(ax + 6, 57.5, 4.5, 0, TAU); ctx.fill(); ctx.stroke();
   }
-  ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = '#ffd23f'; ctx.fillText('Lv.' + player.plevel, ax + 6, 62);
+  ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = '#ffd23f'; if (!SURV) ctx.fillText('Lv.' + player.plevel, ax + 6, 62);   // 生存模式经验条右边已经写了等级
   if (gm.god || gm.ohk || gm.speed !== 1) { ctx.fillStyle = '#ff5a8a'; ctx.fillText('GM', ax + 44, 62); }
 
   // 暂停按钮
-  techBox(W - 44, 6, 38, 38);
-  ctx.fillStyle = '#bff0ff'; ctx.fillRect(W - 31, 16, 4, 18); ctx.fillRect(W - 23, 16, 4, 18);
+  btnFace(W - 44, 6, 38, 38, '', { tint: 'steel' });   // 和菜单同一套金属按钮
+  ctx.fillStyle = '#eaf7ff'; ctx.fillRect(W - 30.5, 18, 3.5, 14); ctx.fillRect(W - 23, 18, 3.5, 14);
   ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(190,240,255,.85)'; ctx.textAlign = 'right';
   ctx.fillText(SURV ? '生存 ' + fmtTime(survT) : 'STAGE ' + stage, W - 8, 58);
   if (SURV) { ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = survDoom ? '#ff8a7a' : survWave.on ? '#ffd28a' : '#9fe8ff'; ctx.fillText(survDoom ? `终结潮 · ${fmtTime(survDoom.t)}` : survWave.on ? `第 ${survWave.n}` + (survWaveGoal() ? `/${survWaveGoal()}` : '') + ' 波' : `下一波 ${Math.ceil(survWave.t)}`, W - 8, 74); }
@@ -8603,8 +8657,10 @@ function drawHUD() {
   // 专属武器充能条
   const sg = SKINS[curSkin], locked = !sigOn();
   ctx.textAlign = 'center';   // （左下角的专属武器名字已删掉，只留充能条；下面武器格里的字都居中）
+  if (!SURV) {   // 生存模式的专属技能画在武器框右边（带名字和状态），这里只留给旧模式的细条
   ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(12, H - 67, 104, 3);
   ctx.fillStyle = player.sigReady >= 1 ? '#fff' : `rgb(${LOOK.emis})`; ctx.fillRect(12, H - 67, 104 * clamp(player.sigReady, 0, 1), 3);
+  }
   // 炸弹按钮（生存模式没有手动炸弹，不画）
   const ready = player.bombs > 0;
   if (!SURV) {
@@ -8621,20 +8677,29 @@ function drawHUD() {
     const r = 28, bx = W - 44, by = H - 44, k = clamp(odGauge / 100, 0, 1), full = k >= 1, c = (ULT_DEF[curSkin] || ULT_DEF.silver).c, pu = .5 + .5 * Math.sin(time * 6);
     ultBtn = { x: bx, y: by, r: r + 10 };
     if (full) { ctx.globalCompositeOperation = 'lighter'; drawGlow(bx, by, 74 + 12 * pu, c, .5 + .3 * pu); ctx.globalCompositeOperation = 'source-over'; }
-    ctx.fillStyle = full ? `rgba(${c},.3)` : 'rgba(6,20,36,.78)'; ctx.beginPath(); ctx.arc(bx, by, r, 0, TAU); ctx.fill();
-    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.arc(bx, by, r - 2, 0, TAU); ctx.stroke();
-    if (k > 0) { ctx.strokeStyle = full ? '#fff' : `rgb(${c})`; ctx.beginPath(); ctx.arc(bx, by, r - 2, -Math.PI / 2, -Math.PI / 2 + TAU * k); ctx.stroke(); }
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = `900 14px ${FONT}`; ctx.fillStyle = full ? '#fff' : 'rgba(200,230,255,.55)'; ctx.fillText('必杀', bx, by - 2);
-    ctx.font = `bold 9px ${FONT}`; ctx.fillStyle = full ? `rgb(${c})` : 'rgba(200,230,255,.4)'; ctx.fillText(SURV ? '空格' : 'E', bx, by + 13);
+    btnFace(bx - 33, by - 33, 66, 66, '', { tint: full ? 'gold' : 'blue' });   // 和菜单同一套金属方框，充满变金色；里面的圆环是能量
+    const rr = 21;
+    ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.beginPath(); ctx.arc(bx, by, rr, 0, TAU); ctx.stroke();
+    if (k > 0) { ctx.strokeStyle = full ? '#fff3c8' : `rgb(${c})`; ctx.beginPath(); ctx.arc(bx, by, rr, -Math.PI / 2, -Math.PI / 2 + TAU * k); ctx.stroke(); }
+    titleText('必杀', bx, by - (touchUI ? 0 : 3), 14, full ? '#ffffff' : 'rgba(215,235,255,.72)', full ? 'rgba(255,210,120,.9)' : null);
+    if (!touchUI) { ctx.font = `bold 9px ${FONT}`; ctx.fillStyle = full ? '#ffe9a0' : 'rgba(200,230,255,.5)'; ctx.fillText(SURV ? '空格' : 'E', bx, by + 11); }
     ctx.textBaseline = 'alphabetic';
   }
   // 主武器
-  const wd = WEAPONS[player.weapon];
-  techBox(66, H - 62, 56, 50);
-  ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = `rgb(${wd.c})`; ctx.fillText(weaponLabel(), 94, H - 47);
-  ctx.font = `bold 17px ${FONT}`; ctx.fillStyle = overdrive > 0 ? '#6ef3ff' : '#fff';
-  ctx.fillText(player.lv >= 5 ? 'MAX' : 'LV' + player.lv, 94, H - 24);
+  const wd = WEAPONS[player.weapon], wx = SURV ? 10 : 66, ww = SURV ? 70 : 56, wcx = wx + ww / 2;   // 生存模式没有炸弹按钮，武器框挪到最左边
+  btnFace(wx, H - 64, ww, 54, '');
+  ctx.textAlign = 'center'; ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = `rgb(${wd.c})`; ctx.fillText(weaponLabel(), wcx, H - 43);
+  titleText(player.lv >= 5 ? 'MAX' : 'LV' + player.lv, wcx, H - 26, 16, overdrive > 0 ? '#6ef3ff' : '#ffffff', `rgba(${wd.c},.8)`); ctx.textBaseline = 'alphabetic';
+  // 专属技能：名字 + 状态（充能 / 层数 / 进行中），底下一条充能条；没解锁时灰掉
+  if (SURV) {
+    const st = sigStatus(), nm = sg.sig.name, sx = wx + ww + 6, sy = H - 54, sw = 140, sh = 38;
+    btnFace(sx, sy, sw, sh, '', { tint: st.lock ? 'off' : st.on ? 'gold' : 'blue' });
+    ctx.font = TFONT(13); const nw = ctx.measureText(nm).width; ctx.font = `bold 11px ${FONT}`; const tw = ctx.measureText(st.t).width, x0 = sx + sw / 2 - (nw + 6 + tw) / 2, my = sy + sh / 2 - 1;
+    titleText(nm, x0 + nw / 2, my, 13, st.lock ? 'rgba(215,224,232,.8)' : '#ffffff', st.lock ? null : `rgba(${LOOK.emis},.85)`);
+    ctx.font = `bold 11px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = st.on ? '#ffe9a0' : st.lock ? 'rgba(200,210,220,.75)' : `rgb(${LOOK.emis})`; ctx.fillText(st.t, x0 + nw + 6, my + 1); ctx.textAlign = 'center';
+    if (!st.lock) { const gx = sx + 18, gw = sw - 36, gy = sy + sh - 9; ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(gx, gy, gw, 2.5); ctx.fillStyle = st.on ? '#ffe9a0' : `rgb(${LOOK.emis})`; ctx.fillRect(gx, gy, gw * clamp(player.sigReady, 0, 1), 2.5); }
+    ctx.textBaseline = 'alphabetic';
+  }
   const cx0 = 130;
   let cx = cx0, cy = H - 62;
   for (const u of SURV ? [] : UPGRADES) {
@@ -8747,18 +8812,20 @@ function drawCapRes() {
   });
   const cu = Math.min(1, Math.max(0, (t - 1.4) * 1.5));
   const rows = [['hourglass', '用时', fmtTime(r.took * cu)], ['crosshair', '击毁', fmt(Math.round(r.kills * cu))], ['ore', '采集矿石', String(Math.round(r.ore * cu))], (r.doomT !== undefined ? ['burst', '终结潮坚持', fmtTime(r.doomT * cu)] : null) || ['planet', '已占领星球', String(save.planets.length)]];
-  ctx.fillStyle = 'rgba(10,26,48,.9)'; roundRect(40, 370, W - 80, 124, 10); ctx.fill(); ctx.strokeStyle = 'rgba(90,200,255,.5)'; ctx.lineWidth = 1.2; ctx.stroke();
-  rows.forEach(([gl, n, v], i) => { const y = 391 + i * 27; drawGlyph(gl, 64, y, 15, '#8fdcff'); ctx.textAlign = 'left'; ctx.font = `13px ${FONT}`; ctx.fillStyle = '#b9d6ea'; ctx.fillText(n, 82, y); ctx.textAlign = 'right'; ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(v, W - 58, y); });
+  if (r.doomT !== undefined) rows.push(['igem', '终结潮星晶', '+' + fmt(Math.round((r.doomCr || 0) * cu))]);   // 击毁不给星晶了，终结潮每坚持 1 秒 +5
+  const ex = (rows.length - 4) * 27;
+  ctx.fillStyle = 'rgba(10,26,48,.9)'; roundRect(40, 370, W - 80, 124 + ex, 10); ctx.fill(); ctx.strokeStyle = 'rgba(90,200,255,.5)'; ctx.lineWidth = 1.2; ctx.stroke();
+  rows.forEach(([gl, n, v], i) => { const y = 391 + i * 27; if (gl === 'igem') gem(64, y, 6); else drawGlyph(gl, 64, y, 15, '#8fdcff'); ctx.textAlign = 'left'; ctx.font = `13px ${FONT}`; ctx.fillStyle = '#b9d6ea'; ctx.fillText(n, 82, y); ctx.textAlign = 'right'; ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(v, W - 58, y); });
   ctx.textAlign = 'center';
   if (t > 1.9) {
     ctx.font = `bold 15px ${FONT}`; const bt = r.tier ? `难度奖励  星晶 ×${tierK(r.tier).toFixed(1)}` : '永久加成  ' + pb.t(cnt), bw = ctx.measureText(bt).width;
-    drawGlyph(pb.gl, W / 2 - bw / 2 - 14, 520, 20, `rgb(${pb.c})`); ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText(bt, W / 2 + 6, 521);
-    ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = '#bff4ff'; const tx = '获得星晶  ' + fmt(player.earned || 0), tw = ctx.measureText(tx).width; gem(W / 2 - tw / 2 - 12, 552, 8); ctx.fillText(tx, W / 2 + 4, 552);
-    ctx.font = `12px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.72)'; ctx.fillText(`${r.fighter} 留在 ${p.name} 维修和守护这颗星球`, W / 2, 584);
+    drawGlyph(pb.gl, W / 2 - bw / 2 - 14, 520 + ex, 20, `rgb(${pb.c})`); ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText(bt, W / 2 + 6, 521 + ex);
+    ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = '#bff4ff'; const tx = '获得星晶  ' + fmt(player.earned || 0), tw = ctx.measureText(tx).width; gem(W / 2 - tw / 2 - 12, 552 + ex, 8); ctx.fillText(tx, W / 2 + 4, 552 + ex);
+    ctx.font = `12px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.72)'; ctx.fillText(`${r.fighter} 留在 ${p.name} 维修和守护这颗星球`, W / 2, 584 + ex);
   }
   if (t > 2.3) {
-    uiBtn(30, 612, 170, 46, '重新出击 [Enter]', 'restart', { tint: 'green', fill: 'rgba(30,110,170,.9)', stroke: '#9fe8ff' });
-    uiBtn(206, 612, 170, 46, '返回基地 [Esc]', 'home', { tint: 'steel' });
+    uiBtn(30, 612 + ex, 170, 46, '重新出击 [Enter]', 'restart', { tint: 'green', fill: 'rgba(30,110,170,.9)', stroke: '#9fe8ff' });
+    uiBtn(206, 612 + ex, 170, 46, '返回基地 [Esc]', 'home', { tint: 'steel' });
   }
 }
 function drawGameOver() {
@@ -8769,7 +8836,7 @@ function drawGameOver() {
   ctx.shadowColor = '#f33'; ctx.shadowBlur = 16;
   ctx.font = `900 48px ${FONT}`; ctx.fillStyle = player.quit ? '#8fe6ff' : player.lostPlanet ? '#ffa04a' : '#ff5a4a'; ctx.fillText(player.quit ? '本局结束' : player.lostPlanet ? '基地失守' : '任务失败', W / 2, 230);
   ctx.shadowBlur = 0;
-  if (SURV && survDoom) { ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#ffb090'; ctx.fillText(`终结潮中坚持 ${fmtTime(survDoom.t)}`, W / 2, 268); }
+  if (SURV && survDoom) { ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#ffb090'; ctx.fillText(`终结潮中坚持 ${fmtTime(survDoom.t)} · 星晶 +${player.doomCr || 0}`, W / 2, 268); }
   ctx.font = `bold 20px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(SURV ? `存活 ${fmtTime(survT)}  ·  第 ${survWave.n} 波` : `到达第 ${stage} 关`, W / 2, 300);
   ctx.font = `16px ${FONT}`; ctx.fillStyle = '#9fe2ff'; ctx.fillText(`击毁 ${fmt(player.kills || 0)}` + (SURV ? `  ·  最久 ${fmtTime(survBest)}` : ''), W / 2, 334);
   ctx.font = `bold 17px ${FONT}`; ctx.fillStyle = '#bff4ff'; const t = '本局获得星晶  ' + fmt(player.earned || 0), tw = ctx.measureText(t).width;
@@ -8808,7 +8875,7 @@ function sideBtn(x, y, gl, label, key, act, c) {
     if (ic) { const s = Math.min(38 / ic.width, 31 / ic.height), iw = ic.width * s, ih = ic.height * s; ctx.drawImage(ic, x + w / 2 - iw / 2, y + 26 - ih / 2, iw, ih); }
     else drawGlyph(gl, x + w / 2, y + 27, 24, `rgb(${c})`);
     titleText(label, x + w / 2, y + 50, 16, '#ffffff', `rgba(${c},.9)`);
-    ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = `rgba(${c},.85)`; ctx.fillText(`[${key}]`, x + w / 2, y + h + 9);
+    if (!touchUI) { ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = `rgba(${c},.85)`; ctx.fillText(`[${key}]`, x + w / 2, y + h + 9); }
     return;
   }
   const w = 64, h = 78;
@@ -8817,7 +8884,7 @@ function sideBtn(x, y, gl, label, key, act, c) {
   ctx.strokeStyle = `rgba(${c},.85)`; ctx.lineWidth = 1.6; ctx.stroke();
   drawGlyph(gl, x + w / 2, y + 28, 26, `rgb(${c})`);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = `bold 14px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(label, x + w / 2, y + 56);
-  ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = `rgba(${c},.8)`; ctx.fillText(`[${key}]`, x + w / 2, y + 70);
+  if (!touchUI) { ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = `rgba(${c},.8)`; ctx.fillText(`[${key}]`, x + w / 2, y + 70); }
 }
 // 系统菜单：音量、模型库
 let sysOpen = false;
@@ -8873,8 +8940,8 @@ function drawTitle() {
     uiRects.push({ x: bx, y: by, w: bw, h: bh, act: 'surv' });
     ctx.globalCompositeOperation = 'lighter'; drawGlow(W / 2, by + bh / 2, bw * .9, '70,170,255', .2 + .1 * pu); ctx.globalCompositeOperation = 'source-over';
     frameImg(TITLE_IMG.bmain, bx, by, bw, bh, .14);
-    titleText('生存模式', W / 2 - 8, by + bh / 2 + 1, 26, '#ffffff', 'rgba(110,210,255,.95)');
-    ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(160,225,255,.8)'; ctx.textAlign = 'left'; ctx.fillText('[V]', W / 2 + 58, by + bh / 2 + 2); ctx.textAlign = 'center';
+    titleText('生存模式', W / 2 - (touchUI ? 0 : 8), by + bh / 2 + 1, 26, '#ffffff', 'rgba(110,210,255,.95)');
+    if (!touchUI) { ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = 'rgba(160,225,255,.8)'; ctx.textAlign = 'left'; ctx.fillText('[V]', W / 2 + 58, by + bh / 2 + 2); ctx.textAlign = 'center'; }
   } else uiBtn(W / 2 - 130, 572, 260, 52, '生存模式 [V]', 'surv', { fill: 'rgba(15,95,75,.92)', stroke: '#8fffd0', fs: 18 });
   const sy = TITLE_IMG.bside ? 252 : 196;   // 新按钮在 Logo 下面开始排，避开 Logo 两侧的翅膀
   sideBtn(10, TITLE_IMG.bside ? sy + 44 : 236, 'gem', '抽卡', 'J', 'gacha', '255,200,110');
