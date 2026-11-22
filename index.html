@@ -2313,11 +2313,16 @@ const smPtr = new Map(), SM_Y0 = 52, SM_Y1 = 424, SM_CY = 238;
 // 每个星区画成一个恒星系：中间恒星，行星在各自的轨道上，外圈一条小行星带
 const secCenter = s => [s % 2 ? 55 : -55, -s * 390];
 const orbitR = slot => 54 + slot * 20;
-function smNodePos(sec, slot) { const [cx, cy] = secCenter(sec), a = -Math.PI / 2 + slot * 2.39 + sec * 1.3, r = orbitR(slot); return [cx + Math.cos(a) * r, cy + Math.sin(a) * r]; }
+// 星系自转：同一星区的行星保持队形，一起绕恒星慢慢转（约 2 分钟一圈），行星之间永远不会重叠
+const SM_SPIN = TAU / 120, smSpin = () => time * SM_SPIN;
+function smNodePos(sec, slot) { const [cx, cy] = secCenter(sec), a = -Math.PI / 2 + slot * 2.39 + sec * 1.3 + smSpin(), r = orbitR(slot); return [cx + Math.cos(a) * r, cy + Math.sin(a) * r]; }
 const STAR_C = ['255,214,120', '170,205,255', '215,255,140', '255,120,90'], STAR_R = [15, 12, 14, 21];
 const PL_R = [9, 11, 12, 10, 8, 13], RINGED = new Set([1, 3, 4]);   // 霜蓝星、沙丘星、晶体星带星环
 const SM_BELT = SECTORS.map((S, s) => { let q = 1234 + s * 97; const rnd1 = () => (q = (q * 16807) % 2147483647) / 2147483647, rb = orbitR(S.kinds.length) + 4; return Array.from({ length: 80 }, () => ({ a: rnd1() * TAU, d: rb + (rnd1() - .5) * 16, s: .7 + rnd1() * 1.6 })); });
 let smRec = false;
+// 背景星空：三层不同远近（拖动地图时远的动得慢），每颗星按自己的节奏闪烁
+const SM_STARS = (() => { let q = 777; const r1 = () => (q = (q * 16807) % 2147483647) / 2147483647; return Array.from({ length: 150 }, () => ({ x: r1(), y: r1(), dp: [.15, .3, .5][r1() * 3 | 0], s: .8 + r1() * 1.4, f: .6 + r1() * 1.8, ph: r1() * TAU })); })();
+let smComets = [], smCometT = 4, smLastT = 0;   // 偶尔划过星图的彗星（屏幕坐标，只是装饰，不能点）
 function drawRecords() {
   uiRects = [];
   ctx.fillStyle = 'rgba(0,6,16,.75)'; ctx.fillRect(0, 0, W, H);
@@ -2342,17 +2347,25 @@ const SM_IMG = {}; for (const k in SM_ART_SRC) { const im = new Image(); im.src 
 const smImg = k => { const im = SM_IMG[k]; return im && im.complete && im.naturalWidth ? im : null; };
 // 每张行星图里星球本体的位置和半径（占图宽的比例），用来把本体对准轨道上的位置
 const SM_PL_META = [[.499, .503, .413], [.497, .49, .29], [.5, .497, .431], [.521, .486, .341], [.501, .506, .295], [.5, .499, .426]];
-function smPlanet(x, y, r, k, a = 1) {
+function smPlanet(x, y, r, k, a = 1, lit) {
   const pal = PLANET_PAL[k], ring = RINGED.has(k), ringArc = (a0, a1) => { ctx.save(); ctx.translate(x, y); ctx.rotate(-.38); ctx.strokeStyle = `rgba(${pal.dust},${.75 * a})`; ctx.lineWidth = Math.max(1.2, r * .22); ctx.beginPath(); ctx.ellipse(0, 0, r * 1.9, r * .55, 0, a0, a1); ctx.stroke(); ctx.restore(); };
   ctx.globalAlpha = a;
   ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, r * 3, pal.atm, .3 * a); ctx.globalCompositeOperation = 'source-over';
   const im = smImg('p' + k);
-  if (im) { const m = SM_PL_META[k], s = r * 1.12 / m[2]; ctx.drawImage(im, x - m[0] * s, y - m[1] * s, s, s); ctx.globalAlpha = 1; return; }   // 插图（星环已画在图里）
+  if (im) { const m = SM_PL_META[k], s = r * 1.12 / m[2]; ctx.drawImage(im, x - m[0] * s, y - m[1] * s, s, s); ctx.globalAlpha = 1; if (lit) smShade(x, y, r * 1.12, lit, a); return; }   // 插图（星环已画在图里）
   if (ring) ringArc(Math.PI, TAU);   // 星环后半圈在星球后面
   const g = ctx.createRadialGradient(x - r * .35, y - r * .35, r * .1, x, y, r); g.addColorStop(0, pal.blob[0]); g.addColorStop(.55, pal.base[1]); g.addColorStop(1, pal.base[0]);
   ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
   ctx.globalAlpha = 1;
   if (ring) ringArc(0, Math.PI);
+  if (lit) smShade(x, y, r, lit, a);
+}
+function smShade(x, y, rb, lit, a) {
+  const dx = lit[0] - x, dy = lit[1] - y, l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
+  const g = ctx.createLinearGradient(x + ux * rb, y + uy * rb, x - ux * rb, y - uy * rb);
+  g.addColorStop(0, 'rgba(0,4,16,0)'); g.addColorStop(.42, 'rgba(0,4,16,0)'); g.addColorStop(.72, `rgba(0,4,16,${.3 * a})`); g.addColorStop(1, `rgba(0,4,16,${.52 * a})`);
+  ctx.save(); ctx.beginPath(); ctx.arc(x, y, rb * .985, 0, TAU); ctx.clip(); ctx.fillStyle = g; ctx.fillRect(x - rb, y - rb, rb * 2, rb * 2);
+  ctx.globalCompositeOperation = 'lighter'; drawGlow(x + ux * rb * .55, y + uy * rb * .55, rb * 1.3, '255,245,225', .1 * a); ctx.restore();
 }
 function drawStarMap() {
   uiRects = [];
@@ -2365,17 +2378,42 @@ function drawStarMap() {
   // 地图区域
   ctx.save(); ctx.beginPath(); ctx.rect(0, SM_Y0, W, SM_Y1 - SM_Y0); ctx.clip();
   ctx.fillStyle = 'rgba(8,18,34,.6)'; ctx.fillRect(0, SM_Y0, W, SM_Y1 - SM_Y0);
-  // 航线
+  const sdt = clamp(time - smLastT, 0, .05); smLastT = time;
+  // 背景星空：视差 + 闪烁
+  { const Hm = SM_Y1 - SM_Y0;
+    for (const st of SM_STARS) {
+      const px = ((st.x * W - smCam.x * st.dp * z) % W + W) % W, py = SM_Y0 + ((st.y * Hm - smCam.y * st.dp * z) % Hm + Hm) % Hm, a = (.2 + .5 * (.5 + .5 * Math.sin(time * st.f + st.ph))) * (.6 + st.dp);
+      ctx.fillStyle = `rgba(205,228,255,${a})`; ctx.fillRect(px - st.s / 2, py - st.s / 2, st.s, st.s);
+      if (st.s > 1.8) { ctx.globalCompositeOperation = 'lighter'; drawGlow(px, py, 7, '190,220,255', a * .7); ctx.globalCompositeOperation = 'source-over'; }
+    } }
+  // 彗星：每 7–12 秒从地图边缘划过一颗
+  if ((smCometT -= sdt) <= 0) {
+    smCometT = rnd(7, 12); const fromL = Math.random() < .5, y0 = rnd(SM_Y0 + 20, SM_Y0 + (SM_Y1 - SM_Y0) * .6), a = (fromL ? rnd(.15, .5) : Math.PI - rnd(.15, .5)), sp = rnd(170, 250);
+    smComets.push({ x: fromL ? -30 : W + 30, y: y0, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, L: rnd(70, 110) });
+  }
+  for (const c of smComets) { c.x += c.vx * sdt; c.y += c.vy * sdt; }
+  smComets = smComets.filter(c => c.x > -160 && c.x < W + 160 && c.y < SM_Y1 + 160);
+  for (const c of smComets) {
+    const sp = Math.hypot(c.vx, c.vy), ux = c.vx / sp, uy = c.vy / sp, tx = c.x - ux * c.L, ty = c.y - uy * c.L, nx = -uy, ny = ux;
+    const g = ctx.createLinearGradient(c.x, c.y, tx, ty); g.addColorStop(0, 'rgba(220,240,255,.75)'); g.addColorStop(.35, 'rgba(140,200,255,.3)'); g.addColorStop(1, 'rgba(120,180,255,0)');
+    ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(c.x + nx * 3, c.y + ny * 3); ctx.lineTo(tx, ty); ctx.lineTo(c.x - nx * 3, c.y - ny * 3); ctx.closePath(); ctx.fill();
+    drawGlow(c.x, c.y, 26, '170,215,255', .9); drawGlow(c.x, c.y, 8, '255,255,255', 1); ctx.globalCompositeOperation = 'source-over';
+  }
+  // 航线：已解锁的航线虚线朝下一个星区流动，并有一个光点沿着航线飞过去
   ctx.lineWidth = 2; ctx.setLineDash([6, 8]);
-  for (let s = 1; s < SECTORS.length; s++) { const [ax, ay] = smScr(...secCenter(s - 1)), [bx, by] = smScr(...secCenter(s)); ctx.strokeStyle = s <= done ? 'rgba(140,210,255,.5)' : 'rgba(120,130,150,.25)'; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); }
-  ctx.setLineDash([]);
+  for (let s = 1; s < SECTORS.length; s++) {
+    const [ax, ay] = smScr(...secCenter(s - 1)), [bx, by] = smScr(...secCenter(s)), op = s <= done;
+    ctx.lineDashOffset = op ? -time * 22 : 0; ctx.strokeStyle = op ? 'rgba(140,210,255,.5)' : 'rgba(120,130,150,.25)'; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    if (op) { const k = (time * .3 + s * .37) % 1; ctx.globalCompositeOperation = 'lighter'; drawGlow(ax + (bx - ax) * k, ay + (by - ay) * k, 18, '160,220,255', .85 * Math.sin(Math.PI * k)); ctx.globalCompositeOperation = 'source-over'; }
+  }
+  ctx.setLineDash([]); ctx.lineDashOffset = 0;
   for (let s = 0; s < SECTORS.length; s++) {
     const S = SECTORS[s], open = s <= done, [cx, cy] = smScr(...secCenter(s)), R = (orbitR(S.kinds.length) + 14) * z;
     if (cy + R < SM_Y0 - 40 || cy - R > SM_Y1 + 40) continue;
     const dim = open ? 1 : .35;
     // 星云背景（环形，正好围住恒星系）
     const neb = smImg('n' + s);
-    if (neb) { const ns = R * 2.9; ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .6 * dim; ctx.save(); ctx.translate(cx, cy); ctx.rotate(s * 1.7); ctx.drawImage(neb, -ns / 2, -ns / 2, ns, ns); ctx.restore(); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; }
+    if (neb) { const ns = R * 2.9; ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .6 * dim; ctx.globalAlpha *= .9 + .1 * Math.sin(time * .5 + s); ctx.save(); ctx.translate(cx, cy); ctx.rotate(s * 1.7 + time * .012 * (s % 2 ? -1 : 1)); ctx.drawImage(neb, -ns / 2, -ns / 2, ns, ns); ctx.restore(); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; }   // 星云缓慢旋转、明暗轻轻起伏
     // 行星轨道
     ctx.strokeStyle = `rgba(${S.c},${.16 * dim})`; ctx.lineWidth = 1;
     for (let j = 0; j < S.kinds.length; j++) { ctx.beginPath(); ctx.arc(cx, cy, orbitR(j) * z, 0, TAU); ctx.stroke(); }
@@ -2383,24 +2421,25 @@ function drawStarMap() {
     const ast = [smImg('a0'), smImg('a1')];
     if (ast[0] && ast[1]) {
       ctx.globalAlpha = .9 * dim;
-      SM_BELT[s].forEach((b, i) => { const sz = b.s * 4.2 * Math.max(.6, z), bx = cx + Math.cos(b.a) * b.d * z, by = cy + Math.sin(b.a) * b.d * z; ctx.save(); ctx.translate(bx, by); ctx.rotate(b.a * 3 + i); ctx.drawImage(ast[i % 2], -sz / 2, -sz / 2, sz, sz); ctx.restore(); });
+      const ba = time * .028;   // 小行星带整体慢慢转（比行星慢一点），每块石头各自翻滚
+      SM_BELT[s].forEach((b, i) => { const sz = b.s * 4.2 * Math.max(.6, z), bx = cx + Math.cos(b.a + ba) * b.d * z, by = cy + Math.sin(b.a + ba) * b.d * z; ctx.save(); ctx.translate(bx, by); ctx.rotate(b.a * 3 + i + time * (.25 + (i % 5) * .12)); ctx.drawImage(ast[i % 2], -sz / 2, -sz / 2, sz, sz); ctx.restore(); });
       ctx.globalAlpha = 1;
     } else {
       ctx.fillStyle = `rgba(170,160,150,${.55 * dim})`;
-      for (const b of SM_BELT[s]) { const r0 = b.s * Math.max(.6, z); ctx.fillRect(cx + Math.cos(b.a) * b.d * z - r0 / 2, cy + Math.sin(b.a) * b.d * z - r0 / 2, r0, r0); }
+      for (const b of SM_BELT[s]) { const r0 = b.s * Math.max(.6, z), aa = b.a + time * .028; ctx.fillRect(cx + Math.cos(aa) * b.d * z - r0 / 2, cy + Math.sin(aa) * b.d * z - r0 / 2, r0, r0); }
     }
     // 恒星
-    const sc = STAR_C[s], sr = STAR_R[s] * z;
-    ctx.globalCompositeOperation = 'lighter'; drawGlow(cx, cy, sr * 5, sc, .55 * dim); drawGlow(cx, cy, sr * 2.2, '255,255,240', .5 * dim); ctx.globalCompositeOperation = 'source-over';
+    const sc = STAR_C[s], sr = STAR_R[s] * z, pu = .5 + .5 * Math.sin(time * 1.2 + s * 1.7);   // 恒星呼吸：光晕一明一暗、日冕慢慢转
+    ctx.globalCompositeOperation = 'lighter'; drawGlow(cx, cy, sr * (5 + .7 * pu), sc, (.45 + .2 * pu) * dim); drawGlow(cx, cy, sr * 2.2, '255,255,240', (.42 + .14 * pu) * dim); drawGlow(cx, cy, sr * 8, sc, .12 * pu * dim); ctx.globalCompositeOperation = 'source-over';
     const sim = smImg('s' + s);
-    if (sim) { const ss = sr * 4.6; ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = dim; ctx.drawImage(sim, cx - ss / 2, cy - ss / 2, ss, ss); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; }
+    if (sim) { const ss = sr * 4.6 * (1 + .03 * pu); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = dim; ctx.save(); ctx.translate(cx, cy); ctx.rotate(time * .05 * (s % 2 ? -1 : 1)); ctx.drawImage(sim, -ss / 2, -ss / 2, ss, ss); ctx.restore(); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; }
     else { const sg = ctx.createRadialGradient(cx - sr * .3, cy - sr * .3, sr * .1, cx, cy, sr); sg.addColorStop(0, `rgba(255,255,245,${dim})`); sg.addColorStop(.6, `rgba(${sc},${dim})`); sg.addColorStop(1, `rgba(${sc},${.6 * dim})`); ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(cx, cy, sr, 0, TAU); ctx.fill(); }
     ctx.font = `bold ${Math.round(13 * Math.min(1.3, z))}px ${FONT}`; ctx.fillStyle = open ? `rgb(${S.c})` : 'rgba(150,160,180,.5)';
     ctx.fillText(S.name + (open ? `  ${sectorDoneCount(s)}/${S.kinds.length}` : '  未解锁'), cx, cy + R + 12 * z);
     for (let j = 0; j < S.kinds.length; j++) {
       const [x, y] = smScr(...smNodePos(s, j)), k = S.kinds[j], o = ownedAt(s, j), r = PL_R[k] * z, sel = smSel && smSel.sec === s && smSel.slot === j;
       if (!open) { ctx.fillStyle = 'rgba(40,46,60,.9)'; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); continue; }
-      smPlanet(x, y, r, k, o ? 1 : .45);
+      smPlanet(x, y, r, k, o ? 1 : .45, [cx, cy]);
       if (o) for (let q = 0; q < (o.lv || 1); q++) { ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(x - ((o.lv || 1) - 1) * 3.5 + q * 7, y + r + 8, 2.2, 0, TAU); ctx.fill(); }
       else { ctx.save(); ctx.setLineDash([3, 4]); ctx.strokeStyle = `rgba(${PLANET_PAL[k].atm},.7)`; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x, y, r + 3, 0, TAU); ctx.stroke(); ctx.restore(); }
       if (tg && tg.sec === s && tg.slot === j) { ctx.strokeStyle = `rgba(255,215,90,${.6 + .4 * Math.sin(time * 5)})`; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(x, y, r + 7, 0, TAU); ctx.stroke(); ctx.font = `bold 10px ${FONT}`; ctx.fillStyle = '#ffd77a'; ctx.fillText('目标', x, y - r - 12); }
