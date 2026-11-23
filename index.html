@@ -4494,16 +4494,21 @@ const ULT_FX = {
     f.shift = (dx, dy) => { for (const n of f.ns) { n.x += dx; n.y += dy; for (let i = 0; i < n.tr.length; i += 2) { n.tr[i] += dx; n.tr[i + 1] += dy; } } };
     return f;
   },
-  // 赤焰 · 炼狱风暴：能量环从机体扩散到全屏，随后能量柱在敌人脚下接连喷发（2026-11-23 去掉火焰外观和点燃，颜色跟战机）
+  // 赤焰 · 炼狱风暴：环从机体扩散到全屏，随后柱子在敌人脚下接连喷发。
+  // 装原配主武器熔火喷流时是火环 + 火柱并点燃敌人（原版）；装别的主武器时换成不带火的能量环 + 能量柱，环的伤害 .4 → .5 补回点燃。颜色都跟战机
   crimson(P, d, c) {
+    const fire = P.weapon === 'flame';
     const f = { t: 0, dur: 2, R: 0, hit: new Set(), pil: [], pt: 0 }, maxR = Math.hypot(W, H) * .75;
     f.upd = dt => {
       const k = Math.min(1, f.t / .5), cx = P.x, cy = P.y + HIT_OY; f.R = maxR * (1 - (1 - k) ** 2);
-      for (const t of ultTargets(40)) if (!f.hit.has(t.ref) && Math.hypot(t.x - cx, t.y - cy) < f.R) { f.hit.add(t.ref); ultHit(t, d * .5, c); }   // 不再点燃（原来点燃 2 秒），环的伤害 .4 → .5 补回来
+      for (const t of ultTargets(40)) if (!f.hit.has(t.ref) && Math.hypot(t.x - cx, t.y - cy) < f.R) {
+        f.hit.add(t.ref); ultHit(t, d * (fire ? .4 : .5), c);
+        if (fire && t.kind === 'e') { const e = t.ref; e.burn = Math.max(e.burn || 0, 2); e.burnLv = Math.max(e.burnLv || 0, Math.min(5, P.lv)); e.burnK = P.s.dmgMul; e.burnC = c; }   // 点燃 2 秒，燃烧伤害和熔火喷流一样算
+      }
       if (f.t > .42 && f.t < 1.4 && (f.pt -= dt) <= 0) {
         f.pt = .055; const tg = ultTargets(10), t = tg.length ? tg[Math.random() * tg.length | 0] : null;
         const x = t ? t.x + rnd(-10, 10) : rnd(30, W - 30), y = t ? t.y + rnd(-10, 10) : rnd(60, H - 100);
-        f.pil.push({ x, y, t: 0, s: rnd(.85, 1.2) }); fxPart('nova', x, y, 110, .4, { c, g0: .3, g1: 1 });
+        f.pil.push({ x, y, t: 0, s: rnd(.85, 1.2) }); fxPart(fire ? 'pyre' : 'nova', x, y, 110, .4, { c, g0: .3, g1: 1 });
         for (const o of tg) if (Math.hypot(o.x - x, o.y - y) < 50 + (o.r || 0)) ultHit(o, d * .2, c);
         shake = Math.max(shake, 5); if (f.pil.length % 3 === 1) noise(.25, .1, 700);
       }
@@ -4517,15 +4522,16 @@ const ULT_FX = {
         const g = ctx.createRadialGradient(cx, cy, Math.max(0, f.R - 80), cx, cy, f.R + 12);
         g.addColorStop(0, `rgba(${c},0)`); g.addColorStop(.7, `rgba(${c},${.5 * a})`); g.addColorStop(.92, `rgba(${rgbMix(c, '255,255,255', .7)},${.8 * a})`); g.addColorStop(1, `rgba(${c},0)`);
         ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, f.R + 12, 0, TAU); ctx.fill();
-        const fl = fxGet('flare', c);
+        const fl = fxGet(fire ? 'flame' : 'flare', c);
         if (fl) for (let i = 0; i < 28; i++) { const an = i / 28 * TAU + f.t * .8, s = 74 * (.8 + .4 * Math.sin(i * 3.1 + f.t * 9)); ctx.globalAlpha = .55 * a; ctx.save(); ctx.translate(cx + Math.cos(an) * f.R, cy + Math.sin(an) * f.R); ctx.rotate(an + Math.PI / 2); ctx.drawImage(fl, -s / 2, -s / 2, s, s); ctx.restore(); }
         ctx.globalAlpha = 1;
       }
-      const bm = fxGet('beam', c), core = fxGet('beam', rgbMix(c, '255,255,255', .7));
+      const bm = fxGet('beam', c), core = fxGet('beam', rgbMix(c, '255,255,255', .7)), fl = fire ? fxGet('flame', c) : null;
       for (const q of f.pil) {
         const k = q.t / .6, h = 170 * q.s * Math.min(1, q.t / .12), al = k < .7 ? 1 : (1 - k) / .3;
         drawGlow(q.x, q.y, 70 * q.s, c, .8 * al);
-        if (bm) { ctx.globalAlpha = .85 * al; fxStrip(bm, q.x, q.y, q.x, q.y - h, 54 * q.s); fxStrip(core, q.x, q.y, q.x, q.y - h, 18 * q.s); ctx.globalAlpha = 1; }   // 能量柱
+        if (fl) { ctx.globalAlpha = .85 * al; for (let j = 0; j < 4; j++) { const s = 48 * q.s * (1 - j * .15); ctx.drawImage(fl, q.x - s / 2 + Math.sin(q.t * 30 + j) * 4, q.y - h * (j + .5) / 4 - s / 2, s, s); } ctx.globalAlpha = 1; }   // 火柱：4 团跳动的火焰叠起来
+        else if (bm) { ctx.globalAlpha = .85 * al; fxStrip(bm, q.x, q.y, q.x, q.y - h, 54 * q.s); fxStrip(core, q.x, q.y, q.x, q.y - h, 18 * q.s); ctx.globalAlpha = 1; }   // 能量柱
         drawGlow(q.x, q.y - h * .5, 34 * q.s, rgbMix(c, '255,255,255', .6), .7 * al);
       }
     };
@@ -4568,7 +4574,7 @@ const ULT_FX = {
     };
     return f;
   },
-  // 霜蝎 · 绝对零度：能量潮从机体扩散，把屏幕上的敌人定格、敌弹抹掉，1.25 秒后一齐爆散（2026-11-23 去掉冰的外观，颜色跟战机）
+  // 霜蝎 · 绝对零度：寒潮从机体扩散，冻住屏幕上的敌人和敌弹，1.25 秒后一齐碎裂（冰的外观，颜色跟战机）
   frost(P, d, c) {
     const f = { t: 0, dur: 2, R: 0, fz: [], broke: false }, maxR = Math.hypot(W, H) * .8;
     f.upd = dt => {
@@ -4581,21 +4587,21 @@ const ULT_FX = {
         f.broke = true; shake = Math.max(shake, 16); flash = Math.max(flash, .25);
         noise(.7, .25, 3600); tone(1800, .3, 'triangle', .05, -.7);
         for (const t of ultTargets(40)) ultHit(t, d, c);
-        for (const e of f.fz) { e.frz = 0; for (let i = 0; i < 7; i++) { const a = rnd(0, TAU), v = rnd(80, 260); addPart({ t: 'spark', x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .5, max: .5, c: rgbMix(c, '255,255,255', .4) }); } fxPart('flare', e.x, e.y, e.r * 3 + 20, .3, { c, g0: .5, g1: 1.1 }); }
+        for (const e of f.fz) { e.frz = 0; for (let i = 0; i < 7; i++) { const a = rnd(0, TAU), v = rnd(80, 260); addPart({ t: 'spark', x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .5, max: .5, c: rgbMix(c, '255,255,255', .7) }); } fxPart('flare', e.x, e.y, e.r * 3 + 20, .3, { c: rgbMix(c, '255,255,255', .7), g0: .5, g1: 1.1 }); }
       }
     };
     f.drw = () => {
       const cx = P.x, cy = P.y + HIT_OY;
       ctx.globalCompositeOperation = 'lighter';
       if (f.t < .6) { const a = 1 - f.t / .6, nv = fxGet('nova', c); if (nv) { ctx.globalAlpha = a; const s = f.R * 2.1; ctx.drawImage(nv, cx - s / 2, cy - s / 2, s, s); ctx.globalAlpha = 1; } }
-      if (!f.broke) { const ic = fxGet('flare', c); for (const e of f.fz) { if (e.hp <= 0) continue; drawGlow(e.x, e.y, e.r * 2.2, c, .85); drawGlow(e.x, e.y, e.r * 1.1, rgbMix(c, '255,255,255', .6), .6); if (ic) { const s = e.r * 1.9 + 8; ctx.globalAlpha = .6; ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(e.r); ctx.drawImage(ic, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; } } }
+      if (!f.broke) { const ic = fxGet('frost', c); for (const e of f.fz) { if (e.hp <= 0) continue; drawGlow(e.x, e.y, e.r * 2.2, rgbMix(c, '255,255,255', .45), .85); drawGlow(e.x, e.y, e.r * 1.1, rgbMix(c, '255,255,255', .85), .6); if (ic) { const s = e.r * 1.9 + 8; ctx.globalAlpha = .6; ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(e.r); ctx.drawImage(ic, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; } } }
     };
-    f.over = () => {   // 屏幕边缘一圈战机颜色的光
+    f.over = () => {   // 屏幕边缘结霜
       const a = f.t < .35 ? f.t / .35 : f.broke ? Math.max(0, 1 - (f.t - 1.25) / .6) : 1; if (a <= 0) return;
       const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .35, W / 2, H / 2, Math.hypot(W, H) * .55);
-      g.addColorStop(0, `rgba(${c},0)`); g.addColorStop(1, `rgba(${c},${.45 * a})`);
+      const fc = rgbMix(c, '255,255,255', .6); g.addColorStop(0, `rgba(${fc},0)`); g.addColorStop(1, `rgba(${fc},${.5 * a})`);
       ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-      const ic = null;   // 原来四角贴结霜图，去掉冰的外观后不贴
+      const ic = fxGet('frost', rgbMix(c, '255,255,255', .7));
       if (ic) { ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .5 * a; for (const [x, y, s] of [[0, 0, 200], [W, 0, 200], [0, H, 220], [W, H, 220], [W / 2, 0, 160], [W / 2, H, 160], [0, H / 2, 170], [W, H / 2, 170]]) ctx.drawImage(ic, x - s / 2, y - s / 2, s, s); }
     };
     return f;
@@ -4621,15 +4627,17 @@ const ULT_FX = {
     };
     return f;
   },
-  // 苍雷 · 万雷天罚：天色一暗，24 道光柱从天而降接连打在屏幕上的敌人身上（2026-11-23 去掉闪电外观，颜色跟战机）
+  // 苍雷 · 万雷天罚：天色一暗，24 道攻击从天而降接连打在屏幕上的敌人身上。
+  // 装原配主武器雷霆时是落雷（原版）；装别的主武器时换成不带闪电的光柱（闪电只属于雷霆）。颜色都跟战机
   storm(P, d, c) {
+    const bolt = P.weapon === 'thunder';
     const f = { t: 0, dur: 2.1, n: 0, order: [], lastT: -9, cols: [] };
     f.upd = dt => {
       while (f.n < 24 && f.t > .12 + f.n * .058) {
         f.n++;
         if (!f.order.length) f.order = ultTargets(10).sort(() => Math.random() - .5);
         const t = f.order.pop(), ok = t && tAlive(t), q = ok ? tPos(t) : null, x = q ? q.x : rnd(30, W - 30), y = q ? q.y : rnd(90, H - 140);
-        f.cols.push({ x, y, t: 0 }); fxPart('nova', x, y, 120, .35, { c, g0: .3, g1: 1 });
+        if (bolt) subFx.push({ type: 'skybolt', x, y, t: 0, c }); else { f.cols.push({ x, y, t: 0 }); fxPart('nova', x, y, 120, .35, { c, g0: .3, g1: 1 }); }
         for (const o of ultTargets(10)) if (Math.hypot(o.x - x, o.y - y) < 70 + (o.r || 0)) ultHit(o, d * .34, c);
         f.lastT = f.t; shake = Math.max(shake, 7); if (f.n % 3 === 1) { noise(.3, .13, 3000); tone(90, .3, 'sawtooth', .05, -.5); }
       }
