@@ -3090,18 +3090,16 @@ function survShipXf() { if (SURV && player.ang) { ctx.translate(player.x, player
 const RAR = [{ n: '普通', c: '#7fd1ff', w: 60 }, { n: '稀有', c: '#c37bff', w: 30 }, { n: '史诗', c: '#ffb340', w: 12 }, { n: '进化', c: '#ff5a7a', w: 0 }, { n: '建筑', c: '#ffd27a', w: 0 }];
 const UPGRADES = [
   { id: 'dmg', name: '火力强化', icon: '力', rar: 0, max: 8, get desc() { return SURV ? '所有攻击伤害 +30%' : '所有子弹伤害 +20%'; }, apply: s => s.dmgMul += dmgStep() },
-  { id: 'rate', name: '高速装填', icon: '速', rar: 0, max: 6, desc: '射速 +12%', apply: s => s.rateMul += .12 },
-  // 生存模式专用：攻速单独成卡（生存模式里不出"高速装填"）
+  // 2026-11-23 删掉三张只在闯关模式出现的卡：高速装填（rate）、引力磁场（magnet）、炸弹专家（bomb）
   { id: 'aspd', name: '攻速提升', icon: '攻', rar: 0, max: 6, surv: true, desc: '攻击速度 +15%', apply: s => s.aspd = (s.aspd || 0) + SURV_ASPD },
   { id: 'mspd', name: '移速提升', icon: '移', rar: 0, max: 6, surv: true, desc: '移动速度 +8%', apply: s => s.mspd = (s.mspd || 0) + SURV_MSPD },
   { id: 'pull', name: '吸附范围', icon: '吸', rar: 0, max: PULL_MAX, surv: true, get desc() { return player && (player.ups.pull || 0) >= PULL_MAX - 1 ? '全图的道具直接吸过来' : '经验晶体和道具的吸附范围 +35%'; }, apply: s => s.pull = (s.pull || 0) + SURV_PULL },
   { id: 'armor', name: '装甲扩容', icon: '甲', rar: 0, max: 4, desc: '护甲上限 +1，并修复 1 格', apply: (s, p) => { p.maxArmor++; p.armor++; } },
   { id: 'od', name: '能量回路', icon: '能', rar: 0, max: 4, desc: '能量获取 +30%，必杀伤害 +25%', apply: s => { s.odGain += .3; s.ultMul += .25; } },
-  { id: 'magnet', name: '引力磁场', icon: '磁', rar: 0, max: 3, desc: '道具吸取范围 +60%，经验 +15%', apply: s => { s.magnet += .6; s.xpMul += .15; } },
   // （「连击大师」卡只影响分数倍率，已随分数系统取消）
-  { id: 'bomb', name: '炸弹专家', icon: '炸', rar: 0, max: 3, desc: '炸弹 +2，炸弹伤害 +50%', apply: (s, p) => { p.bombs = Math.min(9, p.bombs + 2); s.bombDmg += .5; } },
   { id: 'heal', name: '紧急维修', icon: '修', rar: 0, max: 99, desc: '立即修复全部护甲', apply: (s, p) => { p.armor = p.maxArmor; }, cond: p => p.armor < p.maxArmor },
-  { id: 'spread', name: '扩散炮', icon: '散', rar: 1, max: 3, desc: '两侧各增加 1 道斜向散射弹', apply: s => s.spread++ },
+  // 扩散炮：各主武器效果不同（卡面按当前主武器写）；熔火喷流不吃这张卡，装它时不刷出来（2026-11-23）
+  { id: 'spread', name: '扩散炮', icon: '散', rar: 1, max: 3, get desc() { return ({ laser: '光束加粗', thunder: '闪电 +1 道', wave: '两侧各增加 1 片侧刃', rail: '两侧各增加 1 条侧轨' })[player && player.weapon] || '两侧各增加 1 道斜向散射弹'; }, apply: s => s.spread++, cond: p => p.weapon !== 'flame' },
   // 贯穿弹头只对「子弹」有用：极光等离子的子弹、机炮 / 守护僚机的子弹（磁轨炮、光束、雷霆、熔火、镰刃都不吃）。
   // 2026-11-23：主武器不是极光等离子、又没有机炮 / 守护僚机时不再刷出这张卡（原来对这些主武器是张废卡）
   { id: 'pierce', name: '贯穿弹头', icon: '贯', rar: 1, max: 3, desc: '子弹可额外穿透 1 个敌人', apply: s => s.pierce++, cond: p => p.weapon === 'vulcan' || (p.s.wingmen > 0 && ['gun', 'guard'].includes(p.wingType || 'gun')) },
@@ -3111,7 +3109,7 @@ const UPGRADES = [
   { id: 'slow', name: '时间缓流', icon: '缓', rar: 1, max: 3, desc: '敌方子弹速度 -10%', apply: s => s.bulletSlow *= .9 },
   { id: 'wing', name: '僚机支援', icon: '僚', rar: 1, max: 5, desc: '获得一架僚机；每被击中 2 次损毁 1 架', apply: s => s.wingmen++, cond: p => p.s.wingmen < 5 },
   // 「雷电链」卡 2026-11-23 删掉：弹射闪电是雷霆的专属（进化「群体链接」），别的武器不该冒闪电
-  { id: 'leech', name: '纳米修复', icon: '愈', rar: 2, max: 2, desc: '每击毁 40 架敌机修复 1 格护甲', apply: s => s.leech++ },
+  { id: 'leech', name: '纳米修复', icon: '愈', rar: 2, max: 2, get desc() { return `每击毁 ${player && (player.ups.leech || 0) >= 1 ? 25 : 40} 架敌机修复 1 格护甲`; }, apply: s => s.leech++ },   // 第 2 级：40 架 → 25 架
   { id: 'dodge', name: '相位闪避', icon: '闪', rar: 2, max: 3, desc: '受到攻击时 15% 几率闪避', apply: s => s.dodge += .15 },
 ];
 // ================= 武器定义 =================
@@ -3199,7 +3197,7 @@ function rollChoices(minRar) {
   if (minRar === 'build') return rollBuild(planetTarget());   // 每 ORE_STEP 矿石的建造三选一
   if (minRar === 'evo') return UPGRADES.filter(u => u.evo === P.weapon && !P.branch[P.weapon]);
   const pool = UPGRADES.filter(u => u.rar < 3 && !u.id.startsWith('main_') && (P.ups[u.id] || 0) < u.max && u.rar >= minRar && (!u.cond || u.cond(P))
-    && (SURV ? u.id !== 'rate' && u.id !== 'magnet' && u.id !== 'bomb' : !u.surv));
+    && (SURV || !u.surv));
   if (upKinds(P) >= UP_KINDS) for (let i = pool.length - 1; i >= 0; i--) { const u = pool[i]; if (!u.noStack && u.id !== 'heal' && u.id !== 'wing' && !(P.ups[u.id] > 0)) pool.splice(i, 1); }
   // 生存模式里攻速 / 移速 / 吸附卡更容易出现（"高速装填"和"引力磁场"由它们取代）
   const half = u => synOf(u.id).some(y => !P.syn[y.id] && upHave(P, y.a === u.id ? y.b : y.a) > 0);   // 组合技已经有一半：另一半更容易出现
@@ -3247,7 +3245,7 @@ function openChest() {
     items.push(u);
   }
   if (cr) { save.crystals += cr; player.earned = (player.earned || 0) + cr; persist(); }
-  const pool = UPGRADES.filter(u => u.rar < 3 && !u.id.startsWith('main_') && (SURV ? u.id !== 'rate' && u.id !== 'magnet' && u.id !== 'bomb' : !u.surv)).sort(() => Math.random() - .5);
+  const pool = UPGRADES.filter(u => u.rar < 3 && !u.id.startsWith('main_') && (SURV || !u.surv)).sort(() => Math.random() - .5);
   chest = { n, items, pool, t0: time, ev: {}, idx: [] };
   state = 'chest'; drag = null;
   tone(392, .12, 'triangle', .06); tone(523, .12, 'triangle', .06, 0, .1);
@@ -9205,10 +9203,8 @@ function cardLv(u) {
     aspd: () => `攻速 ${pct(survRateK() * S.rateMul)} → ${pct((survRateK() + SURV_ASPD) * S.rateMul)}`,
     mspd: () => `移速 ${pct(survMoveK())} → ${pct(survMoveK() + SURV_MSPD)}`,
     pull: () => (player.ups.pull || 0) >= PULL_MAX - 1 ? `吸附 ${Math.round(SURV_PULL0 * survPullK())} → 全图` : `吸附 ${Math.round(SURV_PULL0 * survPullK())} → ${Math.round(SURV_PULL0 * (survPullK() + SURV_PULL))}`,
-    rate: () => `射速 ×${S.rateMul.toFixed(2)} → ×${(S.rateMul + .12).toFixed(2)}`,
     dmg: () => `伤害 ×${S.dmgMul.toFixed(1)} → ×${(S.dmgMul + dmgStep()).toFixed(1)}`,
     armor: () => `护甲 ${P.maxArmor} → ${P.maxArmor + 1}`,
-    magnet: () => `吸取 ×${S.magnet.toFixed(1)} → ×${(S.magnet + .6).toFixed(1)}`,
     crit: () => `暴击 ${pct(S.crit)} → ${pct(S.crit + .12)}`,
     pierce: () => `穿透 ${S.pierce} → ${S.pierce + 1}`,
     spread: () => `散射 ${S.spread} → ${S.spread + 1}`,
