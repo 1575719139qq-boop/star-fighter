@@ -1192,13 +1192,13 @@ function survMove(dt, dx, dy) {
 function survAim(dt) {
   const P = player, cx = P.x, cy = P.y + HIT_OY;
   let best = null, bd = 560 * 560;
-  for (const e of enemies) { if (e.hp <= 0 || e.phased) continue; const d = (e.x - cx) ** 2 + (e.y - cy) ** 2; if (d < bd) { bd = d; best = e; } }
+  for (const e of enemies) { if (e.hp <= 0 || e.phased || !enemyOnScr(e)) continue; const d = (e.x - cx) ** 2 + (e.y - cy) ** 2; if (d < bd) { bd = d; best = e; } }
   // 首领和它的炮台也算瞄准目标
   if (boss && !boss.entering && boss.dying <= 0) for (const t of [...boss.turrets.filter(t => t.hp > 0).map(t => ({ x: boss.x + t.dx, y: boss.y + t.dy })), { x: boss.x, y: boss.y + boss.def.oy }]) { const d = (t.x - cx) ** 2 + (t.y - cy) ** 2; if (d < bd) { bd = d; best = t; } }
   // 星球据点也算瞄准目标（核心挖开后才算）
   if (PLANET) for (const t of targets()) if (t.kind === 'p') { const core = t.ref.type === 'core', dd = (t.x - cx) ** 2 + (t.y - cy) ** 2; if (core && (dd > 480 * 480 || gensAlive(t.ref.p))) continue; /* 护盾还在的核心打不动，不抢瞄准 */ const d = dd * (core ? .25 : 1); if (d < bd) { bd = d; best = t; } }   // 核心（包括还埋着的）在 480 以内才瞄，并且优先
   // 锁定不乱跳：当前目标还活着、在 600 内，就一直打它，除非出现近得多（不到 0.6 倍距离）的敌人
-  const cur = P.aimE && P.aimE.hp > 0 && enemies.includes(P.aimE) ? P.aimE : null;
+  const cur = P.aimE && P.aimE.hp > 0 && enemies.includes(P.aimE) && enemyOnScr(P.aimE) ? P.aimE : null;
   if (cur) { const cd = (cur.x - cx) ** 2 + (cur.y - cy) ** 2; if (cd < 600 * 600 && !(best && bd < cd * .36)) { best = cur; bd = cd; } }
   P.aimE = best && enemies.includes(best) ? best : null;
   if (best) P.aimA = Math.atan2(best.x - cx, -(best.y - cy));
@@ -1867,12 +1867,12 @@ function baseStep(p, dt) {
     s.t -= dt;
     if (s.b === 'turret' && s.t <= 0) {
       let best = null, bd = 380 * 380;
-      for (const e of enemies) { if (e.hp <= 0 || e.phased) continue; const q = (e.x - x) ** 2 + (e.y - y) ** 2; if (q < bd) { bd = q; best = e; } }
+      for (const e of enemies) { if (e.hp <= 0 || e.phased || !enemyOnScr(e)) continue; const q = (e.x - x) ** 2 + (e.y - y) ** 2; if (q < bd) { bd = q; best = e; } }
       if (best) { s.aim = Math.atan2(best.x - x, -(best.y - y)); for (let k = 0, m = 33 * (1 + (s.lv - 1) * .09); k < s.lv; k++) { const o = s.lv === 1 ? (s.side = -(s.side || 1)) * 4.3 : (k - (s.lv - 1) / 2) * (s.lv === 2 ? 9.4 : 5.4), b = mkShot(x + Math.sin(s.aim) * m + Math.cos(s.aim) * o, y - Math.cos(s.aim) * m + Math.sin(s.aim) * o, s.aim, 10.5 * P.s.dmgMul); b.tur = true; b.sz = .8; pBullets.push(b); } s.t = 1.1 - .25 * (s.lv - 1); }
       else s.t = .2;
     } else if (s.b === 'silo' && s.t <= 0) {
       let best = null, bd = 450 * 450;
-      for (const e of enemies) { if (e.hp <= 0 || e.phased) continue; const q = (e.x - x) ** 2 + (e.y - y) ** 2; if (q < bd) { bd = q; best = e; } }
+      for (const e of enemies) { if (e.hp <= 0 || e.phased || !enemyOnScr(e)) continue; const q = (e.x - x) ** 2 + (e.y - y) ** 2; if (q < bd) { bd = q; best = e; } }
       if (best) { p.shells.push({ sx: s.dx, sy: s.dy, tx: best.x - p.x, ty: best.y - p.y, t: 0, T: .7, dmg: (10 + 6 * s.lv) * 1.5 * P.s.dmgMul, r: 60 + 10 * s.lv }); s.t = 3.4 - .6 * (s.lv - 1); tone(220, .12, 'square', .03); }
       else s.t = .3;
     } else if (s.b === 'repair') {
@@ -3483,9 +3483,16 @@ function wingFollow(dt) {
 }
 function mkShot(x, y, a, dmg) { return { x, y, vx: Math.sin(a) * 950, vy: -Math.cos(a) * 950, a, dmg, pierce: player.s.pierce }; }
 // 所有可被攻击的目标（敌机 / 首领炮台 / 首领本体）
+// 2026-11-23：生存模式里屏幕外的敌人打不到——不被锁定、不受伤害、不被烧，进到屏幕里（中心离边缘不超过 0.3 个半径）才算。
+// survFrame 里敌人坐标是转过的，先换回世界坐标（= 屏幕坐标）再判断。主界面演示不受影响
+function enemyOnScr(e) {
+  if (!SURV || DEMO) return true;
+  let x = e.x, y = e.y; if (SF_ROT) { const r = SF_ROT, dx = x - r.cx, dy = y - r.cy; x = r.cx + dx * r.c + dy * r.s; y = r.cy - dx * r.s + dy * r.c; }
+  const m = (e.r || 10) * .3; return x > -m && x < W + m && y > -m && y < H + m;
+}
 function targets() {
   const out = [];
-  for (const e of enemies) if (e.hp > 0 && e.y > -20 && !e.phased) out.push({ kind: 'e', ref: e, x: e.x, y: e.y, r: e.r });
+  for (const e of enemies) if (e.hp > 0 && e.y > -20 && !e.phased && enemyOnScr(e)) out.push({ kind: 'e', ref: e, x: e.x, y: e.y, r: e.r });
   if (boss && !boss.entering && boss.dying <= 0) {
     for (const t of boss.turrets) if (t.hp > 0) out.push({ kind: 't', ref: t, x: boss.x + t.dx, y: boss.y + t.dy, r: t.r || 26 });
     out.push({ kind: 'b', ref: boss, x: boss.x, y: boss.y + boss.def.oy, r: boss.def.r });
@@ -4229,7 +4236,7 @@ function updateEnemies(dt) {
     if (e.burn > 0 && e.hp > 0) {
       const fb = player.weapon === 'flame' ? player.branch.flame : null;
       e.burn -= dt; charTick(e, dt, e.r * (e.type === 'swarm' || e.type === 'acidbat' ? 2 : 1.3), e.r);
-      const bd = burnDps(e.burnLv, e.burnK) * dt; e.hp -= bd; burnNumber(e, e.x, e.y - e.r, bd, dt);
+      const bd = enemyOnScr(e) ? burnDps(e.burnLv, e.burnK) * dt : 0; e.hp -= bd;   // 飘到屏幕外时燃烧暂停扣血 burnNumber(e, e.x, e.y - e.r, bd, dt);
       if (Math.random() < dt * 6) { const sp = e.spots[Math.random() * e.spots.length | 0]; addPart({ t: 'smoke', x: e.x + sp.x, y: e.y + sp.y, vx: rnd(-10, 10), vy: -30, life: .7, max: .7, size: e.r * .4, c: '' }); }
       if (fb === 'melt') e.slow = Math.max(e.slow || 0, .15);
       if (fb === 'wild' && (e.spreadT = (e.spreadT || 0) - dt) <= 0) { e.spreadT = .5; for (const o of enemies) if (o !== e && o.hp > 0 && !(o.burn > 0) && Math.hypot(o.x - e.x, o.y - e.y) < 75) { o.burn = 3; o.burnLv = e.burnLv; o.burnK = e.burnK; o.burnC = e.burnC; addPart({ t: 'glow', x: (o.x + e.x) / 2, y: (o.y + e.y) / 2, vx: 0, vy: -20, life: .3, max: .3, size: 18, c: '255,150,40' }); } }
@@ -4286,7 +4293,7 @@ function updateEnemies(dt) {
 const DIFF_K = 1.1;
 const earlyK = () => (player && player.plevel < 6 ? 1 + .1 * (6 - player.plevel) : 1) / DIFF_K;
 function damageEnemy(e, d) {
-  if (e.hp <= 0) return;
+  if (e.hp <= 0 || !enemyOnScr(e)) return;   // 屏幕外打不到（炸弹、首领死亡清场也只清屏幕内）
   d *= earlyK();
   if (e.mark > 0) d *= MARK_K;   // 极光印记：受到伤害增加
   if (SURV && e.shT > 0 && e.type !== 'shieldbot') d *= .5;   // 护盾节点的护盾：伤害减半
