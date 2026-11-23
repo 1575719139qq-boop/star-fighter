@@ -3881,7 +3881,7 @@ function fireThunder(eff, rate, br) {
 // ================= 磁轨炮（2026-11-23 新增）：蓄力 → 一发瞬间贯穿整条直线的重炮 =================
 // 弱点：蓄力时不开火（攻速只缩短蓄力），成群小怪清得慢。特效「超载一击」：每第 4 发更粗、伤害 ×2.5。
 // 进化：双轨齐射（两条平行，每条 65%）/ 速射轨道（蓄力减半、伤害 -35%）/ 重型轨道（蓄力 +60%、伤害 ×2.2、粗 1.6 倍）。
-// 「扩散炮」卡：每级在两侧各加一条 50% 伤害的轨道。没有目标时保持蓄满，不空放
+// 「扩散炮」卡：每级在两侧各加一条 50% 伤害的轨道，只打主轨道漏掉的敌人（同一个敌人一发只挨一次侧轨，不会三条叠加）。没有目标时保持蓄满，不空放
 const RAIL_T = 1.05, RAIL_LEN = 1100, RAIL_FX = .28;
 function fireRail(dt, eff, rate, br) {
   const P = player, S = P.s, heavy = br === 'heavy', rapid = br === 'rapid', twin = br === 'twin';
@@ -3894,7 +3894,8 @@ function fireRail(dt, eff, rate, br) {
   const w = (10 + eff * 3) * (heavy ? 1.6 : 1) * (over ? 1.8 : 1), d = (55 + eff * 28) * S.dmgMul * (heavy ? 2.2 : rapid ? .65 : 1) * (over ? 2.5 : 1);
   const lines = twin ? [[-16, .65], [16, .65]] : [[0, 1]];
   for (let i = 1; i <= S.spread; i++) for (const sd of [-1, 1]) lines.push([sd * ((twin ? 16 : 0) + i * 15), .5]);
-  for (const [o, k] of lines) for (const t of lineTargets([[nx + o, ny], [nx + o, ny - RAIL_LEN]], w * (k < 1 ? .7 : 1)).filter(t => t.y < ny + 10)) applyHit(t, d * k, t.x, t.y, LOOK.emis, 1);
+  const main = twin ? 2 : 1, hit = new Set();   // 主轨道照常打（双轨的两条各打各的），侧轨跳过这一发已经挨过打的目标
+  lines.forEach(([o, k], i) => { for (const t of lineTargets([[nx + o, ny], [nx + o, ny - RAIL_LEN]], w * (k < 1 ? .7 : 1)).filter(t => t.y < ny + 10)) { if (i >= main && hit.has(t.ref)) continue; hit.add(t.ref); applyHit(t, d * k, t.x, t.y, LOOK.emis, 1); } });
   P.rail = { x: nx, y0: ny, len: RAIL_LEN, w, offs: lines.map(l => [l[0], l[1]]), t: 0, over, c: LOOK.emis };
   shake = Math.max(shake, over ? 7 : heavy ? 5 : 2.5); P.muzzle = .08;
   noise(over ? .35 : .18, over ? .12 : .07, over ? 1400 : 2600); tone(over ? 140 : 220, over ? .35 : .18, 'sawtooth', .05, -.6);
