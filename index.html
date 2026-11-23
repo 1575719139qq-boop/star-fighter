@@ -6148,8 +6148,8 @@ function gmMeta(a) {
 // 机体尺寸随等级成长：LV1 约为满级的 78%
 const shipScale = lv => .78 + (clamp(lv, 1, 5) - 1) * .055;
 // 设计稿单位 → 游戏世界的缩放；驾驶舱中心在设计稿 (0,-16)。每帧随等级更新
-// 战斗中的机体缩小到 80%（机库、标题页、卡面不变）
-const PLAYER_SHRINK = .8;
+// 战斗中的机体缩小到 72%（机库、标题页、卡面不变）
+const PLAYER_SHRINK = .72;   // 2026-11-23：机身再小 10%（.8 → .72）；受伤判定是驾驶舱上半径 HIT_R 的小圆，大小不跟着缩
 let SHIP_K = .72 * PLAYER_SHRINK * shipScale(1), HIT_OY = -16 * SHIP_K;
 let LOOK = lookOf('silver');
 const HIT_R = 5;
