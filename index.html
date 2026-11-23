@@ -1213,6 +1213,11 @@ function worldShift(dx, dy) {
   for (const s of stars) { const k = .3 + s.z * .5; s.x = ((s.x + dx * k) % W + W) % W; s.y = ((s.y + dy * k) % H + H) % H; }
   survBgX += dx * .25; survBgY += dy * .25;
 }
+// 镜头慢半拍跟随（2026-11-24，用户选的做法）：机体不再钉死在屏幕中间。
+// 机体照常按输入的速度在世界里走（操作没有延迟，世界里的走位和原来一模一样），镜头每帧只追上「机体离屏幕中心的偏移」的一部分：
+// 起步时机体先朝移动方向偏出去，镜头随后平滑跟上；匀速飞时机体稳定偏出约 速度 ÷ CAM_K（基础移速 150 ÷ 4 ≈ 37 像素，镜头大约 0.25 秒跟上）；停下后机体滑回中心。
+// 主界面演示不用（那边镜头本来就钉在机体上）。刷怪圈按屏幕中心算（survSpawn），不跟着偏移走
+const CAM_K = 4, CAM_MAX = 64;   // 镜头每秒追上偏移的几倍；机体最多偏出中心多少像素（超出的部分镜头立刻跟上）
 // 玩家移动：只用键盘（方向键 / WASD，Shift 慢速）；触屏设备仍可用虚拟摇杆，鼠标不控制移动
 function survMove(dt, dx, dy) {
   const P = player; let vx = 0, vy = 0;
@@ -1221,7 +1226,13 @@ function survMove(dt, dx, dy) {
   if (dx || dy) { const l = Math.hypot(dx, dy), sp = keys.ShiftLeft || keys.ShiftRight ? base * .55 : base; vx = dx / l * sp; vy = dy / l * sp; }
   else if (P.joy) { vx = P.joy.x * base; vy = P.joy.y * base; }
   P.mvx = vx; P.mvy = vy;
-  worldShift(-vx * dt, -vy * dt);
+  if (DEMO) { worldShift(-vx * dt, -vy * dt); return; }
+  let ox = P.x - W / 2 + vx * dt, oy = P.y - SURV_Y + vy * dt;   // 机体先按输入走
+  const a = 1 - Math.exp(-CAM_K * dt); let sx = ox * a, sy = oy * a;   // 镜头追上一部分偏移
+  ox -= sx; oy -= sy;
+  const l = Math.hypot(ox, oy); if (l > CAM_MAX) { const k = 1 - CAM_MAX / l; sx += ox * k; sy += oy * k; ox -= ox * k; oy -= oy * k; }
+  P.x = W / 2 + ox; P.y = SURV_Y + oy;
+  worldShift(-sx, -sy);
 }
 // 机体转向最近的敌人（没有敌人时朝移动方向）
 function survAim(dt) {
@@ -1350,7 +1361,7 @@ function survUpdate(dt) {
   if ((survRockT -= dt) <= 0) {
     survRockT = rnd(4, 8);
     const a = rnd(0, TAU), b = a + Math.PI + rnd(-.4, .4), sp = rnd(70, 120);
-    const rx = player.x + Math.cos(a) * 480, ry = player.y + Math.sin(a) * 480;
+    const rx = W / 2 + Math.cos(a) * 480, ry = SURV_Y + Math.sin(a) * 480;   // 按屏幕中心算（同刷怪圈）
     // 出生点在岩层里的陨石不刷（原来会直接在星球内部炸出一个坑，有时还把核心炸得提前暴露）
     if (!planetSolidAt(rx, ry)) spawnEnemy(['rock', 'rock', 'junk', 'scrap', 'shard', 'pod'][Math.random() * 6 | 0], rx, ry, { vx: Math.cos(b) * sp, vy: Math.sin(b) * sp, noG: true, spin: rnd(-2, 2) });
   }
@@ -2879,7 +2890,7 @@ function drawEnemyLevels() {
 }
 function survSpawn(type, a, elite) {
   const R = DEMO ? 250 + rnd(0, 60) : survDoom ? 380 + rnd(0, 40) : 470 + rnd(0, 60);   // 终结潮刷得更近   // 主界面演示镜头拉近了，敌人在画面边缘外一点刷出来，才看得到它们冲进来被打爆
-  const fl = spinFx(), ox = fl && fl.fly ? fl.hx : player.x, oy = fl && fl.fly ? fl.hy : player.y;   // 赤焰必杀绕圈飞行时，按机体原位算刷怪圈（不然会刷进画面里）
+  const ox = W / 2, oy = SURV_Y;   // 刷怪圈按屏幕中心算：机体会偏出中心一小段（镜头慢半拍），赤焰必杀还会绕着屏幕飞，按机体算会刷进画面里
   if (PLANET) for (let i = 0; i < 8 && planetSolidAt(ox + Math.cos(a) * R, oy + Math.sin(a) * R); i++) a += .8;   // 不在岩层里刷怪
   spawnEnemy(type, ox + Math.cos(a) * R, oy + Math.sin(a) * R, { vx: 0, vy: 0 });
   // 敌人等级：基础等级随存活时间上涨（每 30 秒 +1，越靠后的星区起点越高），个体再随机高 0–5 级；
@@ -4777,7 +4788,8 @@ const ULT_FX = {
     // 火墙：每 18 像素一团翻滚的火，隔一团加一条朝里舔的火舌
     const wall = []; for (let k = 0, n = 0; k < N; k += 3, n++) wall.push({ x: pts[k][0], y: pts[k][1], u: k / N, n, ph: rnd(0, TAU), sz: rnd(58, 78), rs: rnd(1.5, 3) * (Math.random() < .5 ? 1 : -1), fl: Math.random() < .5 });
     // 某个点在「火墙收拢到几成」时会被扫到：1 = 火墙原来的位置，0 = 机体所在的位置
-    const sOf = (x, y) => { const dx = x - hx, dy = y - hy; return Math.max(dx > 0 ? dx / (B.x1 - hx) : -dx / (hx - B.x0), dy > 0 ? dy / (B.y1 - hy) : -dy / (hy - B.y0)); };
+    let gx = hx, gy = hy;   // 火墙收拢的中心：机体落回来之后跟着机体走（镜头慢半拍，机体不一定停在原地）
+    const sOf = (x, y) => { const dx = x - gx, dy = y - gy; return Math.max(dx > 0 ? dx / (B.x1 - gx) : -dx / (gx - B.x0), dy > 0 ? dy / (B.y1 - gy) : -dy / (gy - B.y0)); };
     const f = { t: 0, dur: T1 + CLOSE + .3, spin: true, fly: true, ang: SURV ? P.ang || 0 : 0, hx, hy, px: hx, py: hy, lapU: 0, s: 1, hit: new Set(), burst: false };
     const burn = t => { if (fire && t.kind === 'e') { const e = t.ref; e.burn = Math.max(e.burn || 0, 2); e.burnLv = Math.max(e.burnLv || 0, Math.min(5, P.lv)); e.burnK = P.s.dmgMul; e.burnC = c; } };
     const strike = t => { f.hit.add(t.ref); ultHit(t, d, c); burn(t); fxPart(fire ? 'pyre' : 'flare', t.x, t.y, 90, .3, { c, g0: .3, g1: 1 }); };
@@ -4789,9 +4801,9 @@ const ULT_FX = {
       if (f.t < OUT) [f.px, f.py] = bez(hx, hy, hx, B.y0, sx, sy, f.t / OUT);
       else if (f.t < T1) { const p = (f.t - OUT) / LAP; f.lapU = p * .8 + p * p * (3 - 2 * p) * .2; [f.px, f.py] = at(f.lapU); }
       else if (f.t < T1 + BACK) { f.lapU = 1; const k = (f.t - T1) / BACK; [f.px, f.py] = bez(sx, sy, hx + dir * ex * 2.4, B.y0 + 30, hx, hy, k * (1.3 - .3 * k)); }
-      else { f.lapU = 1; f.px = hx; f.py = hy; f.fly = false; }
-      if (f.fly) { const vx = f.px - ox, vy = f.py - oy; if (vx || vy) f.ang = Math.atan2(vx, -vy); P.mvx = P.mvy = 0; }
-      P.x = f.px; P.y = f.py; if (!SURV) { P.tx = P.x; P.ty = P.y; }
+      else if (f.fly) { f.lapU = 1; f.fly = false; f.px = hx; f.py = hy; P.x = hx; P.y = hy; if (!SURV) { P.tx = hx; P.ty = hy; } }   // 落回起飞点，之后位置交还给正常移动
+      if (f.fly) { const vx = f.px - ox, vy = f.py - oy; if (vx || vy) f.ang = Math.atan2(vx, -vy); P.mvx = P.mvy = 0; P.x = f.px; P.y = f.py; if (!SURV) { P.tx = P.x; P.ty = P.y; } }
+      else { gx = P.x; gy = P.y; }
       // 飞的时候：尾焰甩出的火星；擦到身边的敌人先挨一下
       if (f.fly) {
         const ta = f.ang + Math.PI / 2;
@@ -4806,8 +4818,8 @@ const ULT_FX = {
         if (k < 1) shake = Math.max(shake, 4);
         if (k >= 1 && !f.burst) {   // 收到机体身边：炸开，把贴身的敌人掀出去
           f.burst = true; flash = Math.max(flash, .3); shake = Math.max(shake, 16); noise(.6, .3, 500); tone(90, .5, 'sawtooth', .08, -.5);
-          fxPart(fire ? 'pyre' : 'nova', hx, hy + HIT_OY, 320, .45, { c, g0: .25, g1: 1 });
-          for (const t of ultTargets(40)) { if (!f.hit.has(t.ref)) strike(t); if (t.kind === 'e') { const dx = t.x - hx, dy = t.y - hy, dd = Math.hypot(dx, dy) || 1; if (dd < 190) push(t.ref, dx / dd * 300, dy / dd * 300); } }
+          fxPart(fire ? 'pyre' : 'nova', gx, gy + HIT_OY, 320, .45, { c, g0: .25, g1: 1 });
+          for (const t of ultTargets(40)) { if (!f.hit.has(t.ref)) strike(t); if (t.kind === 'e') { const dx = t.x - gx, dy = t.y - gy, dd = Math.hypot(dx, dy) || 1; if (dd < 190) push(t.ref, dx / dd * 300, dy / dd * 300); } }
         }
       }
     };
@@ -4819,10 +4831,10 @@ const ULT_FX = {
       const fade = f.burst ? Math.max(0, 1 - (f.t - T1 - CLOSE) / .25) : 1, grow = 1 + (1 - f.s) * .35, skip = Math.max(1, Math.round(1 / f.s));
       if (fade > 0) for (const q of wall) {
         if (q.u > f.lapU || q.n % skip) continue;
-        const born = Math.min(1, (f.lapU - q.u) * LAP * 7 + .25), x = hx + (q.x - hx) * f.s, y = hy + (q.y - hy) * f.s;
+        const born = Math.min(1, (f.lapU - q.u) * LAP * 7 + .25), x = gx + (q.x - gx) * f.s, y = gy + (q.y - gy) * f.s;
         if (ball) { const sz = q.sz * grow * born * (1 + .12 * Math.sin(time * 9 + q.ph)); ctx.save(); ctx.translate(x, y); ctx.rotate(q.ph + time * q.rs); ctx.globalAlpha = .42 * fade; ctx.drawImage(ball, -sz / 2, -sz / 2, sz, sz); ctx.restore(); }
         if (im && q.n % (2 * skip) === 0) {
-          const a = Math.atan2(hy - y, hx - x), hgt = (70 + 30 * Math.sin(time * 15 + q.ph)) * (1 + (1 - f.s) * .6) * born, wd = 64;
+          const a = Math.atan2(gy - y, gx - x), hgt = (70 + 30 * Math.sin(time * 15 + q.ph)) * (1 + (1 - f.s) * .6) * born, wd = 64;
           ctx.save(); ctx.translate(x, y); ctx.rotate(a + Math.PI / 2); if (q.fl) ctx.scale(-1, 1); ctx.globalAlpha = .7 * fade; ctx.drawImage(im, -wd / 2, -hgt, wd, hgt); ctx.restore();
         }
       }
