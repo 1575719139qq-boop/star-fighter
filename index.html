@@ -3102,7 +3102,9 @@ const UPGRADES = [
   { id: 'bomb', name: '炸弹专家', icon: '炸', rar: 0, max: 3, desc: '炸弹 +2，炸弹伤害 +50%', apply: (s, p) => { p.bombs = Math.min(9, p.bombs + 2); s.bombDmg += .5; } },
   { id: 'heal', name: '紧急维修', icon: '修', rar: 0, max: 99, desc: '立即修复全部护甲', apply: (s, p) => { p.armor = p.maxArmor; }, cond: p => p.armor < p.maxArmor },
   { id: 'spread', name: '扩散炮', icon: '散', rar: 1, max: 3, desc: '两侧各增加 1 道斜向散射弹', apply: s => s.spread++ },
-  { id: 'pierce', name: '贯穿弹头', icon: '贯', rar: 1, max: 3, desc: '子弹可额外穿透 1 个敌人', apply: s => s.pierce++ },
+  // 贯穿弹头只对「子弹」有用：极光等离子的子弹、机炮 / 守护僚机的子弹（磁轨炮、光束、雷霆、熔火、镰刃都不吃）。
+  // 2026-11-23：主武器不是极光等离子、又没有机炮 / 守护僚机时不再刷出这张卡（原来对这些主武器是张废卡）
+  { id: 'pierce', name: '贯穿弹头', icon: '贯', rar: 1, max: 3, desc: '子弹可额外穿透 1 个敌人', apply: s => s.pierce++, cond: p => p.weapon === 'vulcan' || (p.s.wingmen > 0 && ['gun', 'guard'].includes(p.wingType || 'gun')) },
   { id: 'shield', name: '护盾发生器', icon: '盾', rar: 1, max: 3, desc: '抵挡 1 次伤害，每 12 秒充能 1 层', apply: s => { s.shieldMax++; s.shield++; } },
   { id: 'crit', name: '弱点解析', icon: '暴', rar: 1, max: 4, desc: '12% 几率造成 2.5 倍暴击伤害', apply: s => s.crit += .12 },
   { id: 'blast', name: '殉爆反应', icon: '爆', rar: 1, max: 3, desc: '击毁敌机时引发范围爆炸', apply: s => s.blast++ },
