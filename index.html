@@ -1138,8 +1138,10 @@ const survRateK = () => SURV_RATE0 + (player.s.aspd || 0);
 // 移动速度同理：开局 60%（基准 SURV_SPEED），只有选"移速提升"卡才会变快（每级 +8%，最多 6 级，满级 108%）
 const SURV_MOVE0 = .6, SURV_MSPD = .08, SURV_HP_T = 200;
 const survMoveK = () => SURV_MOVE0 + (player.s.mspd || 0);
-// 吸附范围同理：经验晶体基础吸附半径 SURV_PULL0，每张"吸附范围"卡 +35%（最多 6 级，满级 3.1 倍）
-const SURV_PULL0 = 70, SURV_PULL = .35;
+// 吸附范围同理：经验晶体基础吸附半径 SURV_PULL0，每张"吸附范围"卡 +35%。
+// 2026-11-23：最多 5 级（原来 6 级）；第 5 级 = 全图吸取——不管多远，经验晶体、矿石、材料、能量、宝箱都直接飞过来；维修包（护甲）不吸（见 pullAll）
+const SURV_PULL0 = 70, SURV_PULL = .35, PULL_MAX = 5;
+const pullAll = () => SURV && !!player && (player.ups.pull || 0) >= PULL_MAX;
 const survPullK = () => 1 + (player.s.pull || 0);
 // 按存活时间逐步加入的敌人种类：[开始秒数, 近战型, 远程 / 特殊型]
 const SURV_TIERS = [[0, ['drone', 'swarm', 'dart'], []], [30, ['burster', 'charger'], ['fighter']], [60, ['splitter'], ['acidbat', 'mortar']],
@@ -3092,7 +3094,7 @@ const UPGRADES = [
   // 生存模式专用：攻速单独成卡（生存模式里不出"高速装填"）
   { id: 'aspd', name: '攻速提升', icon: '攻', rar: 0, max: 6, surv: true, desc: '攻击速度 +15%', apply: s => s.aspd = (s.aspd || 0) + SURV_ASPD },
   { id: 'mspd', name: '移速提升', icon: '移', rar: 0, max: 6, surv: true, desc: '移动速度 +8%', apply: s => s.mspd = (s.mspd || 0) + SURV_MSPD },
-  { id: 'pull', name: '吸附范围', icon: '吸', rar: 0, max: 6, surv: true, desc: '经验晶体和道具的吸附范围 +35%', apply: s => s.pull = (s.pull || 0) + SURV_PULL },
+  { id: 'pull', name: '吸附范围', icon: '吸', rar: 0, max: PULL_MAX, surv: true, get desc() { return player && (player.ups.pull || 0) >= PULL_MAX - 1 ? '全图的道具直接吸过来' : '经验晶体和道具的吸附范围 +35%'; }, apply: s => s.pull = (s.pull || 0) + SURV_PULL },
   { id: 'armor', name: '装甲扩容', icon: '甲', rar: 0, max: 4, desc: '护甲上限 +1，并修复 1 格', apply: (s, p) => { p.maxArmor++; p.armor++; } },
   { id: 'od', name: '能量回路', icon: '能', rar: 0, max: 4, desc: '能量获取 +30%，必杀伤害 +25%', apply: s => { s.odGain += .3; s.ultMul += .25; } },
   { id: 'magnet', name: '引力磁场', icon: '磁', rar: 0, max: 3, desc: '道具吸取范围 +60%，经验 +15%', apply: s => { s.magnet += .6; s.xpMul += .15; } },
@@ -3351,7 +3353,7 @@ function pickChoice(i) {
   floatText(player.x, player.y - 60, u.name, 18, RAR[u.rar].c, 1.4);
   if (SURV && u.id === 'aspd') floatText(player.x, player.y - 38, `攻速 ${Math.round(survRateK() * player.s.rateMul * 100)}%`, 13, '#9fe8ff', 1.2);
   if (SURV && u.id === 'mspd') floatText(player.x, player.y - 38, `移速 ${Math.round(survMoveK() * 100)}%`, 13, '#9fe8ff', 1.2);
-  if (SURV && u.id === 'pull') { floatText(player.x, player.y - 38, `吸附范围 ${Math.round(SURV_PULL0 * survPullK())}`, 13, '#9fe8ff', 1.2); addPart({ t: 'ring', x: player.x, y: player.y, vx: 0, vy: 0, life: .6, max: .6, size: SURV_PULL0 * survPullK() * 2, c: '110,240,255' }); }
+  if (SURV && u.id === 'pull') { floatText(player.x, player.y - 38, pullAll() ? '全图吸取' : `吸附范围 ${Math.round(SURV_PULL0 * survPullK())}`, pullAll() ? 16 : 13, '#9fe8ff', 1.2); addPart({ t: 'ring', x: player.x, y: player.y, vx: 0, vy: 0, life: .6, max: .6, size: SURV_PULL0 * survPullK() * 2, c: '110,240,255' }); }
   choiceQueue.shift();
   if (choiceQueue.length) openChoice();
   if (!choiceQueue.length) { state = 'play'; last = performance.now(); player.inv = Math.max(player.inv, .8); }
@@ -4429,11 +4431,8 @@ function survBomb() {
   if (FX.nova) fxPart('nova', P.x, P.y, 900, .6, { c: '255,190,110', g0: .1, g1: 1 });
   floatText(P.x, P.y - 50, '全屏轰炸', 18, '#ffb36b');
 }
-// 生存模式炸弹掉落：场上同时最多一个，拾取后 30 秒内不再掉
-function survDropBomb(x, y) {
-  if (survBombing || survBombCD > 0 || pickups.some(p => p.k === 'B')) return false;
-  dropPickup(x, y, 'B'); return true;
-}
+// 生存模式炸弹掉落：2026-11-23 用户要求删掉炸弹，不再掉（原来场上同时最多一个，拾取后 30 秒内不再掉；survBomb 留着没人调用）
+function survDropBomb(x, y) { return false; }
 
 // ================= 敌人 =================
 const ETYPES = {
@@ -5170,7 +5169,7 @@ function killEnemy(e) {
     for (const o of enemies) if (o !== e && o.hp > 0 && Math.hypot(o.x - e.x, o.y - e.y) < rad + o.r) damageEnemy(o, 3 * S.blast * S.dmgMul);
   }
   const r = Math.random(), r2 = Math.random();
-  // 生存模式：不掉"火力升级"（武器等级靠选"主炮升级"卡）；精英掉炸弹，小怪偶尔掉护甲修复
+  // 生存模式：不掉"火力升级"（武器等级靠选"主炮升级"卡）；小怪偶尔掉护甲修复（炸弹 2026-11-23 删掉了）
   if (SURV) {
     // 护甲修复（绿色加号）：精英个体 10%、大型敌机 30%、小怪 0.4%，场上最多同时 2 个（原来精英个体必掉，后期满地都是）
     const heal = (x, y) => { if (pickups.filter(q => q.k === 'H').length < 2) dropPickup(x, y, 'H'); };
@@ -5180,7 +5179,7 @@ function killEnemy(e) {
     else if (r < .01) survDropBomb(e.x, e.y);   // 小怪也会掉炸弹
     // 吸取经验球 / 满能量：大型敌机掉率高，小怪偶尔掉；场上同种最多一个
     const r3 = Math.random(), big = e.champ || e.type === 'heavy' || e.type === 'carrier' || e.type === 'hive' || e.type === 'cruiser';
-    if (r3 < (big ? .25 : .008)) survDropOnce(e.x - 16, e.y + 14, 'M');
+    if (r3 < (big ? .25 : .008)) { if (!pullAll()) survDropOnce(e.x - 16, e.y + 14, 'M'); }   // 吸附满级后全图自动吸，不再掉「吸取经验」
     else if (r3 < (big ? .5 : .016)) survDropOnce(e.x + 16, e.y + 14, 'E');
     if (Math.random() < (big ? .6 : .08)) dropOre(e.x + rnd(-10, 10), e.y + rnd(-10, 10), big ? 3 : 1);   // 打怪也掉一点矿石
     if (Math.random() < (e.elite ? MAT_ELITE : e.champ ? MAT_CHAMP : MAT_NORM)) dropMat(e.x + rnd(-8, 8), e.y + rnd(-8, 8), e.elite || e.champ ? 1 : 0);   // 合成材料：小怪掉合金，精英 / 冠军掉能量核
@@ -5201,13 +5200,15 @@ function pickupKind(p) {
 function survDropOnce(x, y, k) { if (!pickups.some(p => p.k === k)) dropPickup(x, y, k); }
 function dropPickup(x, y, k) { pickups.push({ x, y, k, t: 0, vy: SURV ? 0 : 70 }); }
 function updatePickups(dt) {
-  const P = player;
+  const P = player, all = pullAll();
   for (const p of pickups) {
     p.t += dt;
     const dx = P.x - p.x, dy = P.y - p.y, d = Math.hypot(dx, dy);
     // 经验晶体的吸取范围小一些（"引力磁场"卡可以扩大），被吸住后越飞越快
-    const pk = SURV ? survPullK() : 1;
-    if (!P.dead && d < ((p.k === 'X' || p.k === 'O' || p.k === 'Q') ? (p.pull ? 9999 : Math.max(p.k === 'Q' ? 200 : 0, SURV_PULL0 * pk * P.s.magnet)) : 110 * pk * P.s.magnet)) { if ((p.k === 'X' || p.k === 'O' || p.k === 'Q')) { p.pull = true; p.sp = Math.min(900, (p.sp || 180) + 1400 * dt); } const sp = (p.k === 'X' || p.k === 'O' || p.k === 'Q') ? p.sp : 420; p.x += dx / d * sp * dt; p.y += dy / d * sp * dt; }
+    const pk = SURV ? survPullK() : 1, col = p.k === 'X' || p.k === 'O' || p.k === 'Q';
+    const far = all && p.k !== 'H';   // 吸附满级：全图直接吸；维修包（护甲）不吸，留在原地自己去捡（用户定的）
+    const R = col ? (p.pull || far ? Infinity : Math.max(p.k === 'Q' ? 200 : 0, SURV_PULL0 * pk * P.s.magnet)) : far ? Infinity : 110 * pk * P.s.magnet;
+    if (!P.dead && d < R) { if (col) { p.pull = true; p.sp = Math.min(900, (p.sp || 180) + 1400 * dt); } const sp = col ? p.sp : far ? 700 : 420; p.x += dx / (d || 1) * sp * dt; p.y += dy / (d || 1) * sp * dt; }
     else { p.y += p.vy * dt; p.x += Math.sin(p.t * 3) * 30 * dt; }
     if (!P.dead && d < 26) {
       if (p.k === 'X') { p.got = true; gainXP(p.v); gemSnd(); if (P.syn.siphon) odAdd(.6); continue; }
@@ -9201,7 +9202,7 @@ function cardLv(u) {
   const T = {
     aspd: () => `攻速 ${pct(survRateK() * S.rateMul)} → ${pct((survRateK() + SURV_ASPD) * S.rateMul)}`,
     mspd: () => `移速 ${pct(survMoveK())} → ${pct(survMoveK() + SURV_MSPD)}`,
-    pull: () => `吸附 ${Math.round(SURV_PULL0 * survPullK())} → ${Math.round(SURV_PULL0 * (survPullK() + SURV_PULL))}`,
+    pull: () => (player.ups.pull || 0) >= PULL_MAX - 1 ? `吸附 ${Math.round(SURV_PULL0 * survPullK())} → 全图` : `吸附 ${Math.round(SURV_PULL0 * survPullK())} → ${Math.round(SURV_PULL0 * (survPullK() + SURV_PULL))}`,
     rate: () => `射速 ×${S.rateMul.toFixed(2)} → ×${(S.rateMul + .12).toFixed(2)}`,
     dmg: () => `伤害 ×${S.dmgMul.toFixed(1)} → ×${(S.dmgMul + dmgStep()).toFixed(1)}`,
     armor: () => `护甲 ${P.maxArmor} → ${P.maxArmor + 1}`,
