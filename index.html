@@ -689,9 +689,15 @@ function bgmLoad() {
   for (const k in BGM_SRC) if (k !== 'boss') fetch(BGM_SRC[k]).then(r => r.ok ? r.arrayBuffer() : Promise.reject()).then(a => actx.decodeAudioData(a)).then(b => { bgm.buf[k] = b; }).catch(() => { });
 }
 const bossFight = () => !!(boss && !(boss.dying > 0) && !DEMO);
-const bgmWant = () => state === 'play' || state === 'choose' || state === 'build' || state === 'chest' || state === 'paused' ? (bossFight() && bgm.el ? 'boss' : 'battle') : 'menu';
+// 音乐试听（2026-11-24，用户：放进系统里能单独听，用键盘藏起来）：系统菜单里按 M 才显示 / 收起「试听」这一行，没有按钮入口，手机上看不到。
+// 点哪首就切到哪首；关掉系统菜单就回到正常的主界面音乐。首领曲按开场速度放（对局里才随首领掉血加快）
+let sysMusic = false, bgmPick = null;
+const BGM_NAMES = [['menu', '主界面'], ['battle', '战斗'], ['boss', '首领']];
+const bgmPicked = () => bgmPick && state === 'title' && sysOpen ? (bgmPick === 'boss' && !bgm.el ? 'menu' : bgmPick) : null;
+const bgmWant = () => bgmPicked() || (state === 'play' || state === 'choose' || state === 'build' || state === 'chest' || state === 'paused' ? (bossFight() && bgm.el ? 'boss' : 'battle') : 'menu');
 const bossRate = () => { const k = boss && boss.maxHp ? clamp(1 - boss.hp / boss.maxHp, 0, 1) : 0; return Math.round((.9 + .35 * k) * 40) / 40; };   // 每 2.5% 一档，不每帧改速度（频繁改会有杂音）
 function bgmUpdate() {
+  if (bgmPick && !(state === 'title' && sysOpen)) bgmPick = null;   // 试听只在系统菜单开着时有效
   if (!actx || actx.state !== 'running') return; bgmLoad();
   const want = muted ? null : bgmWant();
   if (want === bgm.cur) {
@@ -3401,7 +3407,7 @@ addEventListener('keydown', e => {
   keys[e.code] = true; initAudio(); touchUI = false;
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   if (state === 'codex') { if (e.code === 'Escape' || e.code === 'KeyL' || e.code === 'Enter') state = 'title'; if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') codexPage = (codexPage + (e.code === 'ArrowLeft' ? CODEX.length - 1 : 1)) % CODEX.length; return; }
-  if (state === 'title' && sysOpen) { if (e.code === 'Escape') sysOpen = false; else if (e.code === 'KeyL') { sysOpen = false; state = 'codex'; } return; }
+  if (state === 'title' && sysOpen) { if (e.code === 'Escape') sysOpen = false; else if (e.code === 'KeyL') { sysOpen = false; state = 'codex'; } else if (e.code === 'KeyM') { sysMusic = !sysMusic; tone(sysMusic ? 760 : 520, .06, 'triangle', .05); } return; }   // M：显示 / 收起隐藏的音乐试听
   if (state === 'title' && e.code === 'KeyL') { state = 'codex'; return; }
   if (state === 'title' && e.code === 'KeyV') { startSurvival(); return; }
   if (STAGE_MODE_ON && state === 'title' && e.code === 'KeyX') { startGame(); return; }
@@ -6738,6 +6744,7 @@ function titleAct(a) {
   if (volAct(a) || a === 'nop') return;
   if (a === 'sys') { sysOpen = true; return; }
   if (a === 'sysclose') { sysOpen = false; return; }
+  if (a && a.startsWith('bgm:')) { bgmPick = a.slice(4); tone(660, .05, 'square', .04); return; }
   sysOpen = false;
   if (a === 'hangar') { state = 'hangar'; hangarPick = null; }
   else if (a === 'gacha') state = 'gacha';
@@ -9806,12 +9813,24 @@ function drawSysMenu() {
   uiRects = [];
   ctx.fillStyle = 'rgba(0,6,16,.72)'; ctx.fillRect(0, 0, W, H);
   uiRects.push({ x: 0, y: 0, w: W, h: H, act: 'sysclose' });
-  const y0 = 220; panel(40, y0, W - 80, 250, .96); uiRects.push({ x: 40, y: y0, w: W - 80, h: 250, act: 'nop' });
+  const ex = sysMusic ? 38 : 0, y0 = 220 - ex / 2; panel(40, y0, W - 80, 250 + ex, .96); uiRects.push({ x: 40, y: y0, w: W - 80, h: 250 + ex, act: 'nop' });
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = `900 20px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('系 统', W / 2, y0 + 28);
   drawVolRow(W / 2 - 86, y0 + 60, '音乐', 'music');
   drawVolRow(W / 2 - 86, y0 + 98, '音效', 'sfx');
-  uiBtn(W / 2 - 100, y0 + 142, 200, 40, '模型库 [L]', 'codex');
-  uiBtn(W / 2 - 100, y0 + 194, 200, 40, '关闭 [Esc]', 'sysclose', { tint: 'steel', fill: 'rgba(30,50,70,.9)' });
+  if (sysMusic) drawBgmRow(W / 2 - 86, y0 + 136);
+  uiBtn(W / 2 - 100, y0 + 142 + ex, 200, 40, '模型库 [L]', 'codex');
+  uiBtn(W / 2 - 100, y0 + 194 + ex, 200, 40, '关闭 [Esc]', 'sysclose', { tint: 'steel', fill: 'rgba(30,50,70,.9)' });
+}
+// 试听这一行：试听 [主界面][战斗][首领]，正在放的那首亮着（和上面两条音量排成一样宽）
+function drawBgmRow(x, y) {
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = `bold 12px ${FONT}`; ctx.fillStyle = '#9fe2ff'; ctx.fillText('试听', x, y + 13);
+  const now = bgmPicked() || 'menu';
+  BGM_NAMES.forEach(([k, name], i) => {
+    const bx = x + 32 + i * 46, on = k === now;
+    uiBtn(bx, y, 44, 26, '', 'bgm:' + k, on ? { tint: 'gold' } : { tint: 'steel' });
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = on ? '#fff0b8' : '#bfe6f5'; ctx.fillText(name, bx + 22, y + 14);
+  });
+  ctx.textAlign = 'center';
 }
 function drawTitle() {
   uiRects = [];
