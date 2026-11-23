@@ -7010,6 +7010,9 @@ const ShipA = (() => {
     crimson1: { cy: -12.8, noz: [[0, 50]], nav: [29.9, 31.4] }, crimson3: { cy: -20.6, noz: [[-9.4, 60], [9.4, 60]], nav: [45.9, 35.1] }, crimson5: { cy: -23.7, noz: [[-9.2, 65], [9.2, 65]], nav: [63.8, 24.5] },
     gold1: { cy: -17, noz: [[0, 50]], nav: [49.4, -2.1] }, gold3: { cy: -20, noz: [[-9.7, 60], [9.7, 60]], nav: [55.8, -3.3] }, gold5: { cy: -11, noz: [[-9.8, 65], [9.8, 65]], nav: [57.1, 10.8] },
   };
+  // 2026-11-23 大机体缩小（用户：大的战机都小一点，像铁砧一样）：这五台长机身整体画成 85%，贴图不动，PL_GEO 里的数在 plImg 里一起乘。
+  // 驾驶舱（受击判定点）还是对在 y = -16，判定大小不变。赤焰已经单独重新压过图（也是 85%），银翼、铁砧本来就小
+  const PL_K = { phantom: .85, frost: .85, owl: .85, storm: .85, gold: .85 };
   const PL_SHAPE = { phantom: 'dart' }, PL_SC = 2.4, plCache = {};   // 2026-11-23 赤焰（火凤翼）/ 黄金（环翼）换了自己的机身，只剩暗影用旧长机身
   const plStage = lv => lv <= 1 ? 1 : lv <= 3 ? 3 : 5;
   function plImg(look, lv) {
@@ -7017,9 +7020,9 @@ const ShipA = (() => {
     if (!src) return null;
     const key = look.key + '|' + st;
     if (plCache[key]) return plCache[key];
-    const geo = PL_GEO[(PL_SHAPE[id] || id) + st], w = src.width / PL_SC, h = src.height / PL_SC, dy = -16 - geo.cy;
+    const K = PL_K[id] || 1, geo = PL_GEO[(PL_SHAPE[id] || id) + st], w = src.width / PL_SC * K, h = src.height / PL_SC * K, dy = -16 - geo.cy * K;
     const c = look.key.includes('/') && look.ramp ? rampImg(src, look.ramp) : src;
-    return plCache[key] = { c, b: { x0: -w / 2, y0: -h / 2 + dy, x1: w / 2, y1: h / 2 + dy }, gy: geo.gun !== undefined ? geo.gun + dy : -h / 2 + dy + 3, noz: geo.noz.map(([x]) => [x, h / 2 - 2 + dy]), nav: [geo.nav[0], geo.nav[1] + dy] };
+    return plCache[key] = { c, b: { x0: -w / 2, y0: -h / 2 + dy, x1: w / 2, y1: h / 2 + dy }, gy: geo.gun !== undefined ? geo.gun * K + dy : -h / 2 + dy + 3, noz: geo.noz.map(([x]) => [x * K, h / 2 - 2 + dy]), nav: [geo.nav[0] * K, geo.nav[1] * K + dy] };
   }
   // 进化涂装：按亮度套用分支配色梯度
   function rampImg(src, ramp) {
