@@ -1103,7 +1103,7 @@ function startGame(demoRun) {
     weapon: 'vulcan', lastLv: 1, lastBranch: null, orbA: 0, orbs: [], beams: [], branch: {}, evoAsked: {}, mainTarget: null, whipA: 0, zapT: 0, sigT: 1, sigCharge: 0, sigReady: 0, blades: [], rail: null };
   applyLoadout(player);
   ShipA.warm(curSkin, player.weapon);
-  pBullets = []; eBullets = []; enemies = []; pickups = []; parts = []; texts = []; boss = null; holes = []; subFx = []; wrecks = []; stains = []; rifts = []; bossHaz = [];
+  pBullets = []; eBullets = []; enemies = []; pickups = []; parts = []; texts = []; boss = null; holes = []; subFx = []; wrecks = []; stains = []; rifts = []; bossHaz = []; sideNotes = []; defAlert = null;
   combo = 0; comboT = 0; odGauge = 0; overdrive = 0; shake = 0; flash = 0; redFlash = 0; bonusLines = [];
   choiceQueue = []; choices = []; storm = null; arenaK = 0; chest = null; chestLastT = -99; chestN = 0; runTier = 0;
   setPhase('intro');
@@ -1713,14 +1713,53 @@ function foeStep(p, dt) {
   }
   if (p.core.flash > 0) p.core.flash -= dt;
 }
-// 环境：赤岩星岩浆喷发、翠林星虫群从地表涌出（霜蓝星减速见 planetSlowK，沙丘星沙暴见 drawPlanetEnv）
+// 环境：赤岩星岩浆喷发、翠林星虫群从地表涌出、沙丘星阵发沙暴（霜蓝星减速见 planetSlowK）
 function planetEnv(p, dt) {
+  if (p.kind === 3) { sandStep(p, dt); return; }
   if ((p.envT -= dt) > 0) return;
   if (p.kind === 0) { p.envT = 3.2; const h = hitPt(); survFx.push({ k: 'shell', x: h.x + rnd(-70, 70), y: h.y + rnd(-70, 70), t: 0, delay: 1.3, r: 52 }); }
   else if (p.kind === 4) { p.envT = 3.6; const h = hitPt(); survFx.push({ k: 'spike', x: h.x + rnd(-80, 80), y: h.y + rnd(-80, 80), t: 0, delay: 1.1, r: 58, rot: rnd(0, TAU) }); }   // 晶刺爆发：地面先透出紫光，1.1 秒后晶簇刺出来
   else if (p.kind === 5) { p.envT = 4.5; const h = hitPt(); survFx.push({ k: 'gas', x: h.x + rnd(-90, 90), y: h.y + rnd(-90, 90), r: 72, t: 0, life: 6, tick: .8 }); }   // 毒雾：站在里面会持续掉护甲
   else if (p.kind === 2) { p.envT = 7; const a = Math.atan2(p.y - player.y, p.x - player.x); for (let k = 0; k < 4; k++) survSpawn('swarm', a + rnd(-.5, .5)); }
   else p.envT = 1;
+}
+// 沙丘星沙暴（2026-11-23 重做）：平时晴朗，每 20 秒刮一阵——先提示 1.5 秒，再刮 6 秒（前后各 1 秒渐强渐弱）；
+// 沙尘从一个方向横扫过屏幕，远处变朦胧；风把玩家和敌弹往顺风方向推（玩家最多 75/秒，开局移速 150，逆风也飞得动）
+const SAND_GAP = 20, SAND_WARN = 1.5, SAND_ON = 6, SAND_WIND = 75;
+function sandStep(p, dt) {
+  const s = p.sand || (p.sand = { t: 6, ph: 0, k: 0, a: 0, bl: null });   // ph：0 晴 / 1 预警 / 2 沙暴
+  s.t -= dt;
+  if (s.ph === 0 && s.t <= 0) { s.ph = 1; s.t = SAND_WARN; s.a = rnd(0, TAU); floatText(player.x, player.y - 92, '沙暴来袭', 20, '#ffd690', 1.6); noise(.8, .06, 380); }
+  else if (s.ph === 1 && s.t <= 0) { s.ph = 2; s.t = SAND_ON; noise(1.6, .1, 420); }
+  else if (s.ph === 2 && s.t <= 0) { s.ph = 0; s.t = SAND_GAP; }
+  s.k = s.ph === 2 ? clamp(Math.min(SAND_ON - s.t, s.t), 0, 1) : 0;
+  if (s.k > 0 && !player.dead) {
+    const wx = Math.cos(s.a) * SAND_WIND * s.k, wy = Math.sin(s.a) * SAND_WIND * s.k;
+    worldShift(-wx * dt, -wy * dt);   // 世界往逆风方向挪 = 玩家顺风漂
+    for (const b of eBullets) { b.x += wx * .8 * dt; b.y += wy * .8 * dt; }
+  }
+}
+// 沙尘团：柔边拉长的椭圆（和星球云同一种画法），预先画好一张，按风向旋转拉伸
+const SAND_BLOB = (() => { let c = null; return () => c || (c = makeCanvas(128, 64, g => { g.translate(64, 32); g.scale(64, 32); const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); gr.addColorStop(0, 'rgba(232,196,128,.9)'); gr.addColorStop(.55, 'rgba(222,182,112,.45)'); gr.addColorStop(1, 'rgba(210,170,100,0)'); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, TAU); g.fill(); })); })();
+function drawSandstorm(s) {
+  const D = Math.hypot(W, H) + 400, ca = Math.cos(s.a), sa = Math.sin(s.a);
+  if (s.ph === 1) {   // 预警：上风那一侧的屏幕边缘先黄起来
+    const k = 1 - s.t / SAND_WARN, x0 = W / 2 - ca * D / 2, y0 = H / 2 - sa * D / 2, g = ctx.createLinearGradient(x0, y0, W / 2, H / 2);
+    g.addColorStop(0, `rgba(214,170,98,${.55 * k})`); g.addColorStop(.6, 'rgba(214,170,98,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  if (s.k <= 0) return;
+  const k = s.k, h = hitPt();
+  ctx.fillStyle = `rgba(214,170,98,${.14 * k})`; ctx.fillRect(0, 0, W, H);
+  const v = ctx.createRadialGradient(h.x, h.y, 170, h.x, h.y, Math.max(W, H) * .78);   // 远处朦胧，中间清楚（不再是黑洞一样的暗圈）
+  v.addColorStop(0, 'rgba(222,180,108,0)'); v.addColorStop(1, `rgba(206,160,90,${.5 * k})`); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  if (!s.bl) { s.bl = []; for (let i = 0; i < 26; i++) s.bl.push({ o: rnd(0, D), c: rnd(-D / 2, D / 2), len: rnd(120, 260), w: rnd(26, 60), sp: rnd(360, 520), al: rnd(.35, .7) }); for (let i = 0; i < 46; i++) s.bl.push({ o: rnd(0, D), c: rnd(-D / 2, D / 2), len: rnd(16, 34), w: rnd(3, 6), sp: rnd(700, 950), al: rnd(.45, .8) }); }
+  const im = SAND_BLOB();
+  for (const b of s.bl) {
+    const al = ((b.o + time * b.sp) % D) - D / 2, x = W / 2 + ca * al - sa * b.c, y = H / 2 + sa * al + ca * b.c;
+    if (x < -b.len || x > W + b.len || y < -b.len || y > H + b.len) continue;
+    ctx.globalAlpha = b.al * k; ctx.save(); ctx.translate(x, y); ctx.rotate(s.a); ctx.drawImage(im, -b.len / 2, -b.w / 2, b.len, b.w); ctx.restore();
+  }
+  ctx.globalAlpha = 1;
 }
 function planetStep(dt) {
   if (!PLANET) return;
@@ -1782,9 +1821,8 @@ function startDefense(p) {
   const hub = p.hub; hub.hp = hub.max = Math.round(500 * (1 + .3 * p.i));
   // 打掉核心后再守 DEF_AFTER 波（原来要守到第 20 波）
   p.def = { winWave: survWave.n + DEF_AFTER, t: 3 };
-  floatText(W / 2, SURV_Y - 170, '核心摧毁 · 敌军开始反扑', 20, '#ffd28a', 2.6);
-  floatText(W / 2, SURV_Y - 140, `守住指挥中心到第 ${p.def.winWave} 波`, 15, '#bff4ff', 2.6);
-  sfxWarning();
+  defAlert = { t: time, wave: p.def.winWave };   // 大横幅（原来只有两行飘字，容易错过）
+  sfxWarning(); redFlash = Math.max(redFlash, .4);
 }
 function spawnDefender(p, role) {
   const hub = p.hub, ha = Math.atan2(hub.dy, hub.dx), a = ha + rnd(-.9, .9), dist = Math.hypot(hub.dx, hub.dy) + rnd(560, 760);
@@ -1868,7 +1906,10 @@ const modOk = id => { const m = MODS[id]; return (!m.max || (modN[id] || 0) < m.
 function siteHit(s, d) {
   if (!s.b || (s.hub && !s.p.def)) return;   // 指挥中心平时打不坏，守护阶段才是敌军的目标
   s.hp -= d; s.hit = .15;
-  if (s.hub) { if (s.hp <= 0) defenseLost(s.p); return; }
+  if (s.hub) {
+    const D = s.p.def; if (D && time - (D.alertT ?? -9) > 4) { D.alertT = time; sideNote(`指挥中心受到攻击 · ${Math.max(0, Math.round(s.hp / s.max * 100))}%`, '255,90,80', 'wrench'); }
+    if (s.hp <= 0) defenseLost(s.p); return;
+  }
   if (s.hp <= 0) { const p = s.p, x = p.x + s.dx, y = p.y + s.dy; explosion(x, y, 30); floatText(x, y - 30, BUILDS[s.b].name + ' 被摧毁', 13, '#ff8a7a', 1.4); s.b = null; s.lv = 0; s.hp = s.max = 0; }
 }
 // 袭击者：飞向目标建筑自爆
@@ -2353,20 +2394,14 @@ function drawPlanets() {
     }
   }
 }
-// 环境画面：霜蓝星画面边缘结霜，沙丘星沙暴挡住远处视野
+// 环境画面：霜蓝星画面边缘结霜，沙丘星阵发沙暴（见 drawSandstorm）
 function drawPlanetEnv() {
   const t = planetTarget(); if (!t || !t.inOrbit) return;
   const h = hitPt();
   if (t.kind === 1) {
     const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .35, W / 2, H / 2, Math.max(W, H) * .7);
     g.addColorStop(0, 'rgba(170,220,255,0)'); g.addColorStop(1, 'rgba(190,230,255,.35)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  } else if (t.kind === 3) {
-    const g = ctx.createRadialGradient(h.x, h.y, 130, h.x, h.y, 330);
-    g.addColorStop(0, 'rgba(190,150,80,0)'); g.addColorStop(1, 'rgba(170,130,70,.82)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-    ctx.strokeStyle = 'rgba(240,210,150,.25)'; ctx.lineWidth = 1.5; ctx.beginPath();
-    for (let k = 0; k < 36; k++) { const y = (k * 53.7) % H, x = (k * 131 + time * (220 + k % 5 * 40)) % (W + 80) - 40; ctx.moveTo(x, y); ctx.lineTo(x + 28, y + 6); }
-    ctx.stroke();
-  }
+  } else if (t.kind === 3 && t.sand) drawSandstorm(t.sand);
 }
 const ENV_TXT = ['岩浆喷发', '冰冻减速', '虫群出没', '沙暴', '晶刺爆发', '毒雾'];
 // 屏幕边缘箭头：目标不在屏幕里时指过去
@@ -3302,6 +3337,14 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
 let drag = null;
+const JOY_R = 26;   // 浮动摇杆：拖出这么远（游戏坐标，手机上约半厘米）就全速
+// 按住时画出摇杆：底圈在圈心，小圆点在手指处
+function drawJoystick() {
+  if (!drag || !SURV || state !== 'play' || drag.fx === undefined) return;
+  ctx.fillStyle = 'rgba(150,215,255,.18)'; ctx.beginPath(); ctx.arc(drag.sx, drag.sy, JOY_R + 14, 0, TAU); ctx.fill();
+  ctx.fillStyle = 'rgba(150,215,255,.14)'; ctx.beginPath(); ctx.arc(drag.sx, drag.sy, JOY_R, 0, TAU); ctx.fill();
+  ctx.fillStyle = 'rgba(200,240,255,.6)'; ctx.beginPath(); ctx.arc(drag.fx, drag.fy, 13, 0, TAU); ctx.fill();
+}
 function toLocal(e) { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H }; }
 cv.addEventListener('pointerdown', e => {
   initAudio(); if (e.pointerType !== 'mouse') touchUI = true;
@@ -3330,7 +3373,7 @@ cv.addEventListener('pointerdown', e => {
   if (state === 'paused') { const a = uiHit(p); if (volAct(a)) return; if (a === 'quit') quitRun(); else togglePause(); return; }
   if (!SURV && p.x < 64 && p.y > H - 70) { useBomb(); return; }
   if (e.pointerType !== 'mouse') {
-    drag = { ox: player.x - p.x, oy: player.y - p.y, sx: p.x, sy: p.y };
+    drag = { ox: player.x - p.x, oy: player.y - p.y, sx: p.x, sy: p.y, fx: p.x, fy: p.y };
     try { cv.setPointerCapture(e.pointerId); } catch (_) { }
   }
 });
@@ -3342,9 +3385,12 @@ cv.addEventListener('pointermove', e => {
   const p = toLocal(e);
   if (e.pointerType === 'mouse') { if (!SURV) { player.tx = p.x; player.ty = p.y; player.useTarget = true; } }
   else if (drag && SURV) {
-    // 生存模式：触屏是虚拟摇杆，按下的位置为中心，拖出 50 像素达到全速
-    const jx = (p.x - drag.sx) / 50, jy = (p.y - drag.sy) / 50, l = Math.hypot(jx, jy);
-    player.joy = l > 1 ? { x: jx / l, y: jy / l } : { x: jx, y: jy };
+    // 生存模式：触屏是浮动摇杆（2026-11-23 改：原来要拖 50 像素才全速、掉头要拖回原点，玩家反映很费劲）
+    // 按下的位置是圈心，拖出 JOY_R 就全速；手指拖到圈外时圈心跟着手指走，掉头只要往回一点
+    let dx = p.x - drag.sx, dy = p.y - drag.sy, l = Math.hypot(dx, dy);
+    if (l > JOY_R) { drag.sx = p.x - dx / l * JOY_R; drag.sy = p.y - dy / l * JOY_R; dx = p.x - drag.sx; dy = p.y - drag.sy; l = JOY_R; }
+    drag.fx = p.x; drag.fy = p.y;
+    player.joy = l < 2 ? null : { x: dx / JOY_R, y: dy / JOY_R };
   }
   else if (drag) { player.tx = p.x + drag.ox; player.ty = p.y + drag.oy; player.useTarget = true; }
 });
@@ -4208,10 +4254,37 @@ function hurtPlayer(dmg = 1) {
     explosion(P.x, P.y, 55); gore(P.x, P.y, 30, false); bloodScreen = 2; shake = 20;
   }
 }
+// 屏幕左侧的小提示（2026-11-23）：僚机损毁、指挥中心受到攻击；从左边滑进来，2.6 秒后淡出，最多叠 3 条
+let sideNotes = [], defAlert = null;
+function sideNote(txt, c, icon) { sideNotes.push({ txt, c, icon, t: time }); if (sideNotes.length > 3) sideNotes.shift(); }
+function drawSideNotes() {
+  sideNotes = sideNotes.filter(n => time - n.t < 2.6 && time >= n.t);
+  ctx.save(); ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = `bold 12px ${FONT}`;
+  sideNotes.forEach((n, i) => {
+    const age = time - n.t, a = Math.min(1, age / .15, (2.6 - age) / .4), w = 40 + ctx.measureText(n.txt).width, x = 10 - (w + 10) * (1 - Math.min(1, age / .18)), y = H * .4 + i * 34;
+    ctx.globalAlpha = a; ctx.fillStyle = 'rgba(36,10,16,.8)'; roundRect(x, y, w, 28, 6); ctx.fill(); ctx.fillStyle = `rgb(${n.c})`; ctx.fillRect(x, y + 3, 3, 22);
+    drawGlyph(n.icon, x + 18, y + 14, 14, `rgb(${n.c})`); ctx.fillStyle = '#fff'; ctx.fillText(n.txt, x + 31, y + 15);
+  });
+  ctx.restore();
+}
+// 守护开始的大提示：整条横幅，停 4 秒（玩家这时多半在星球背面，指挥中心在另一边，很容易错过）
+function drawDefAlert() {
+  if (!defAlert) return; const age = time - defAlert.t; if (age > 4.2 || age < 0) { defAlert = null; return; }
+  const a = Math.min(1, age / .25, (4.2 - age) / .5), y = H * .3, pu = .75 + .25 * Math.sin(time * 9);
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(0, y - 52, 0, y + 70); g.addColorStop(0, 'rgba(120,20,16,0)'); g.addColorStop(.25, 'rgba(120,24,18,.82)'); g.addColorStop(.75, 'rgba(120,24,18,.82)'); g.addColorStop(1, 'rgba(120,20,16,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, y - 52, W, 122);
+  ctx.fillStyle = `rgba(255,150,90,${.9 * pu})`; ctx.fillRect(0, y - 30, W, 2); ctx.fillRect(0, y + 50, W, 2);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  ctx.font = `900 34px ${FONT}`; ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(30,4,4,.9)'; ctx.strokeText('守住指挥中心', W / 2, y); ctx.shadowColor = `rgba(255,120,80,${pu})`; ctx.shadowBlur = 18; ctx.fillStyle = '#fff'; ctx.fillText('守住指挥中心', W / 2, y); ctx.shadowBlur = 0;
+  ctx.font = `bold 15px ${FONT}`; ctx.lineWidth = 3; const sub = `敌军冲向指挥中心 · 守到第 ${defAlert.wave} 波 · 跟着箭头回防`; ctx.strokeText(sub, W / 2, y + 34); ctx.fillStyle = '#ffe2b0'; ctx.fillText(sub, W / 2, y + 34);
+  ctx.restore();
+}
 function loseWingman() {
   const P = player; if (!(P.s.wingmen > 0)) return;
   P.s.wingmen--; const w = P.wing.pop();
-  if (w) { explosion(w.x, w.y, 26); for (let i = 0; i < 8; i++) { const a = rnd(0, TAU), v = rnd(60, 180); addPart({ t: 'spark', x: w.x, y: w.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .4, max: .4, c: '255,170,120' }); } floatText(w.x, w.y - 22, '僚机损毁', 13, '#ff9a7a', 1.2); }
+  if (w) { explosion(w.x, w.y, 26); for (let i = 0; i < 8; i++) { const a = rnd(0, TAU), v = rnd(60, 180); addPart({ t: 'spark', x: w.x, y: w.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .4, max: .4, c: '255,170,120' }); } }
+  sideNote(`僚机损毁 · 剩 ${P.s.wingmen} 架`, '255,140,110', 'squad');
   tone(140, .25, 'sawtooth', .05, -.4);
 }
 function useBomb() {
@@ -8839,6 +8912,7 @@ function render() {
   if (PLANET && state !== 'over') drawPlanetEnv();
   drawHUD();
   if (PLANET && state !== 'over') drawPlanetHud();
+  if (SURV && state !== 'over') { drawSideNotes(); drawDefAlert(); drawJoystick(); }
   if (SURV && state !== 'over') drawOwnedCards();
   drawUltCut();
 
