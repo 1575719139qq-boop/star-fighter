@@ -3150,7 +3150,7 @@ const BRANCHES = {
   ],
   wave: [
     { id: 'boomer', name: '回旋镰刃', icon: '回', desc: '镰刃飞出后折返回到机体，往返各命中一次' },
-    { id: 'shock', name: '裂隙斩', icon: '裂', desc: '更宽更重的镰刃，把敌机击退一大段' },
+    { id: 'shock', name: '裂隙斩', icon: '裂', desc: '更宽更重的镰刃，击退敌机并撕开空间裂缝' },
     { id: 'helix', name: '双生镰刃', icon: '双', desc: '两道交织的螺旋镰刃，覆盖面更广' },
   ],
   flame: [
@@ -3948,14 +3948,15 @@ function skyBolt(t, dmg, col = '150,165,255') {
 }
 // 熔火喷流 · 熔岩火池：喷火时每 1.4 秒在火焰前端留下一片火池，持续 3 秒，踩进去的敌人被点燃
 const POOL_CD = 1.4, POOL_LIFE = 3, FLAME_ON = 4, FLAME_OFF = 1;
-// ================= 虚空镰刃：切开空间 =================
+// ================= 虚空镰刃 · 裂隙斩：切开空间 =================
+// 2026-11-23（用户）：裂缝只在进化「裂隙斩」才出现（原来所有镰刃都有）；裂缝顺着镰刃飞行的方向竖着裂开（原来是横着的）。
 // 每 1.8 秒，主镰刃飞出 170 像素后在原地撕开一道空间裂缝（约 1 秒）：
 // 血量低（不到三成，或少于镰刃 3 刀的伤害）的敌人被吸进裂缝直接消失（照样算击杀）；其他敌人被定住 1 秒。首领和星球据点不受影响
 let rifts = [];
 const RIFT_CD = 1.8, RIFT_LIFE = 1.1;
 function spawnRift(b) {
   const hx = b.hx ?? 0, hy = b.hy ?? -1, len = Math.max(110, b.w * 1.4);
-  rifts.push({ x: b.x, y: b.y, px: -hy, py: hx, len, t: 0, dmg: b.dmg, hit: new Set() });
+  rifts.push({ x: b.x, y: b.y, px: hx, py: hy, len, t: 0, dmg: b.dmg, hit: new Set() });   // px, py：裂缝的方向 = 镰刃的飞行方向
   tone(140, .35, 'sawtooth', .05, -.6); noise(.3, .08, 2400);
 }
 const riftOpen = r => Math.min(1, r.t / .15) * Math.min(1, (RIFT_LIFE - r.t) / .2);
@@ -4024,7 +4025,7 @@ function fireWave(eff, rate, br) {
   // 回旋镰刃：生存模式里玩家在屏幕中间、上方空间短，飞得慢一点、折返得快一点，不然还没回头就飞出屏幕了
   const o = { dmg: (8 + eff * 3) * S.dmgMul * (shock ? 1.55 : helix ? .7 : 1), grow: (16 + eff * 18) * (shock ? 1.6 : 1), shock, boomer, dec: SURV ? 1100 : 900,
     c: LOOK.emis };
-  const rift = time - (P.riftAt ?? -9) >= RIFT_CD; if (rift) P.riftAt = time;   // 这一刀会切开空间
+  const rift = shock && time - (P.riftAt ?? -9) >= RIFT_CD; if (rift) P.riftAt = time;   // 这一刀会切开空间（只有裂隙斩）
   if (helix) for (const s of [-1, 1]) pBullets.push(mkWave(P.x, P.y - 40, 0, -560, Object.assign({}, o, { helix: s, x0: P.x, ht: 0, rift: rift && s < 0 })));
   else pBullets.push(mkWave(P.x, P.y - 40, 0, boomer ? (SURV ? -760 : -950) : -620, Object.assign({}, o, { rift })));
   for (let i = 1; i <= S.spread; i++) for (const sd of [-1, 1])
@@ -4831,12 +4832,12 @@ const ULT_FX = {
   // 暗影 · 次元斩（2026-11-23 重做，用户的点子：化刃 → 静止 → 爆开）：
   // ① 战机化成一把利刃（机体暂时不画），两刀交叉划过全屏，都从机体的位置穿过去；
   // ② 屏幕上的敌人身上各留一道刀痕，画面褪色压暗，敌人、首领和敌弹定住 SLASH_STILL 秒（你自己照常能动）；
-  // ③ 所有刀痕同时裂开：这时才结算伤害，敌人被推向两侧，两道黑色的空间裂缝慢慢合上。
+  // ③ 所有刀痕同时裂开：这时才结算伤害，敌人被推向两侧，两道刀光炸亮后慢慢淡掉（不留黑色的空间裂缝——裂缝只属于镰刃的进化「裂隙斩」）。
   phantom(P, d, c) {
     const SL = .12, T2 = .14, MARK = T2 + SL + .01, BURST = MARK + SLASH_STILL, h0 = hitPt(), A = .6, L = Math.hypot(W, H) * .62;
     const mk = (a, t0) => [h0.x - Math.cos(a) * L, h0.y - Math.sin(a) * L, h0.x + Math.cos(a) * L, h0.y + Math.sin(a) * L, t0, a];
     const cuts = [mk(-A, 0), mk(A - Math.PI, T2)];   // 第一刀左下 → 右上，第二刀右下 → 左上
-    const f = { t: 0, dur: BURST + 1.15, cut: false, marks: null, hideShip: true };
+    const f = { t: 0, dur: BURST + .95, cut: false, marks: null, hideShip: true };
     fxPart('flare', h0.x, h0.y, 120, .2, { c, g0: .3, g1: 1 }); tone(1500, .1, 'triangle', .05, 1.6);
     f.upd = dt => {
       f.hideShip = f.t < MARK;
@@ -4857,7 +4858,7 @@ const ULT_FX = {
     };
     f.drw = () => {
       const bm = fxGet('beam', c), core = fxGet('beam', '255,255,255'), blade = TITLE_IMG.iblade;
-      // 静止：画面褪色 + 压暗（刀痕和裂缝画在这层上面，所以是亮的）
+      // 静止：画面褪色 + 压暗（刀痕和刀光画在这层上面，所以是亮的）
       const still = f.t < MARK ? clamp((f.t - MARK + .06) / .06, 0, 1) : f.t < BURST ? 1 : Math.max(0, 1 - (f.t - BURST) / .12);
       if (still > 0) {
         ctx.globalCompositeOperation = 'saturation'; ctx.fillStyle = `rgba(128,128,128,${.9 * still})`; ctx.fillRect(0, 0, W, H);
@@ -4866,16 +4867,6 @@ const ULT_FX = {
       for (const [x0, y0, x1, y1, t0, a] of cuts) {
         const g = clamp((f.t - t0) / SL, 0, 1); if (g <= 0) continue;
         const xe = x0 + (x1 - x0) * g, ye = y0 + (y1 - y0) * g;
-        // 裂开后：黑色的虚空缝隙（中间宽、两头尖），慢慢合上
-        if (f.cut) {
-          const k = Math.min(1, (f.t - BURST) / 1.05), hw = 18 * Math.sin(k * Math.PI), dx = x1 - x0, dy = y1 - y0, l = Math.hypot(dx, dy), nx = -dy / l, ny = dx / l;
-          if (hw > .5) {
-            ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = 'rgba(8,0,18,.92)'; ctx.beginPath();
-            for (let i = 0; i <= 14; i++) { const u = i / 14, w = hw * Math.sin(u * Math.PI); ctx.lineTo(x0 + dx * u + nx * w, y0 + dy * u + ny * w); }
-            for (let i = 14; i >= 0; i--) { const u = i / 14, w = hw * Math.sin(u * Math.PI); ctx.lineTo(x0 + dx * u - nx * w, y0 + dy * u - ny * w); }
-            ctx.closePath(); ctx.fill(); ctx.globalCompositeOperation = 'lighter'; ctx.strokeStyle = `rgba(${c},.9)`; ctx.lineWidth = 2; ctx.stroke();
-          }
-        }
         ctx.globalCompositeOperation = 'lighter';
         if (!f.cut) {
           // 刀光：刀还在飞时身后拖一截，划完后整条细细的亮线留在空中
