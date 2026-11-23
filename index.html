@@ -645,8 +645,9 @@ function initAudio() {
   if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); sfxBus = actx.createGain(); sfxBus.gain.value = vols.sfx; sfxBus.connect(actx.destination); } catch (e) { } }
   if (actx && actx.state === 'suspended') actx.resume();
 }
-// ================= 背景音乐：主菜单 / 战斗两首（music/ 目录），无缝循环，切换时淡入淡出；M 键一起静音 =================
-const BGM_SRC = { menu: 'music/menu.mp3', battle: 'music/battle.mp3' }, BGM_VOL = .4;
+// ================= 背景音乐：主菜单 / 战斗 / 首领战三首（music/ 目录），循环播放，切换时淡入淡出；M 键一起静音 =================
+// 首领战（摇滚，2026-11-23）：首领出场就切过去，首领血越少放得越快（满血 90% → 打空 125%，音高不变），首领倒下切回战斗曲
+const BGM_SRC = { menu: 'music/menu.mp3', battle: 'music/battle.mp3', boss: 'music/boss.mp3' }, BGM_VOL = .4;
 // 音量（0–100%，每档 10%）：音乐默认 40%，音效默认 100%；记在本机
 const VOL_KEY = { music: 'starFighterMusicVol', sfx: 'starFighterSfxVol' };
 const vols = { music: .4, sfx: 1 };
@@ -672,25 +673,40 @@ function volAct(a) {
   const k = a.slice(5); if (!(k in vols)) return false;
   setVol(k, vols[k] + (a[3] === '+' ? .1 : -.1)); return true;
 }
-const bgm = { buf: {}, cur: null, src: null, gain: null, vol: -1, loading: false };
+const bgm = { buf: {}, cur: null, src: null, gain: null, vol: -1, loading: false, el: null, elGain: null, elT: 0, rate: 1 };
 function bgmLoad() {
   if (bgm.loading || !actx) return; bgm.loading = true;
-  for (const k in BGM_SRC) fetch(BGM_SRC[k]).then(r => r.ok ? r.arrayBuffer() : Promise.reject()).then(a => actx.decodeAudioData(a)).then(b => { bgm.buf[k] = b; }).catch(() => { });
+  // 首领曲用 <audio> 放：边放边变速时音高不变（preservesPitch）；WebAudio 缓冲一变速音高就跟着升
+  try {
+    const el = new Audio(); el.src = BGM_SRC.boss; el.loop = true; el.preload = 'auto'; el.preservesPitch = el.mozPreservesPitch = el.webkitPreservesPitch = true;
+    const g = actx.createGain(); g.gain.value = 0; actx.createMediaElementSource(el).connect(g); g.connect(actx.destination); bgm.el = el; bgm.elGain = g;
+  } catch (e) { bgm.el = null; }
+  for (const k in BGM_SRC) if (k !== 'boss') fetch(BGM_SRC[k]).then(r => r.ok ? r.arrayBuffer() : Promise.reject()).then(a => actx.decodeAudioData(a)).then(b => { bgm.buf[k] = b; }).catch(() => { });
 }
-const bgmWant = () => state === 'play' || state === 'choose' || state === 'build' || state === 'chest' || state === 'paused' ? 'battle' : 'menu';
+const bossFight = () => !!(boss && !(boss.dying > 0) && !DEMO);
+const bgmWant = () => state === 'play' || state === 'choose' || state === 'build' || state === 'chest' || state === 'paused' ? (bossFight() && bgm.el ? 'boss' : 'battle') : 'menu';
+const bossRate = () => { const k = boss && boss.maxHp ? clamp(1 - boss.hp / boss.maxHp, 0, 1) : 0; return Math.round((.9 + .35 * k) * 40) / 40; };   // 每 2.5% 一档，不每帧改速度（频繁改会有杂音）
 function bgmUpdate() {
   if (!actx || actx.state !== 'running') return; bgmLoad();
   const want = muted ? null : bgmWant();
   if (want === bgm.cur) {
-    const v = bgmTarget();   // 音量条 + 暂停时音乐压低
-    if (bgm.gain && v !== bgm.vol) { bgm.vol = v; bgm.gain.gain.setTargetAtTime(v, actx.currentTime, .15); }
+    const v = bgmTarget(), g = want === 'boss' ? bgm.elGain : bgm.gain;   // 音量条 + 暂停时音乐压低
+    if (g && v !== bgm.vol) { bgm.vol = v; g.gain.setTargetAtTime(v, actx.currentTime, .15); }
+    if (want === 'boss') { const r = bossRate(); if (r !== bgm.rate) { bgm.rate = r; bgm.el.playbackRate = r; } }
     return;
   }
-  if (want && !bgm.buf[want]) return;   // 还在加载
+  if (want === 'boss' ? bgm.el.readyState < 3 : want && !bgm.buf[want]) return;   // 还在加载
   const t = actx.currentTime;
   if (bgm.src) { const g = bgm.gain; g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + .8); bgm.src.stop(t + .85); }
+  if (bgm.cur === 'boss' && bgm.el) { const g = bgm.elGain.gain, el = bgm.el; g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(0, t + .8); clearTimeout(bgm.elT); bgm.elT = setTimeout(() => { if (bgm.cur !== 'boss') el.pause(); }, 900); }
   bgm.src = bgm.gain = null; bgm.cur = want; bgm.vol = bgmTarget();
   if (!want) return;
+  if (want === 'boss') {   // 每场首领战从头放
+    const el = bgm.el, g = bgm.elGain.gain; clearTimeout(bgm.elT);
+    el.currentTime = 0; bgm.rate = bossRate(); el.playbackRate = bgm.rate; el.play().catch(() => { });
+    g.cancelScheduledValues(t); g.setValueAtTime(0, t); g.linearRampToValueAtTime(bgm.vol, t + 1.2);
+    return;
+  }
   const s = actx.createBufferSource(), g = actx.createGain(); s.buffer = bgm.buf[want]; s.loop = true;
   g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(bgm.vol, t + 1.2); s.connect(g); g.connect(actx.destination); s.start(t);
   bgm.src = s; bgm.gain = g;
