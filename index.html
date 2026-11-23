@@ -3905,14 +3905,52 @@ function polyStrip(tex, pts, end, w) {   // 沿折线从起点画到离起点 en
     acc += L;
   }
 }
+const BEAM_OFF = document.createElement('canvas'), BEAM_G = BEAM_OFF.getContext('2d');
 function fxStripFall(tex, pts, w, cuts) {
-  const a0 = ctx.globalAlpha, n = cuts.length, A = k => .45 + .55 * pierceK(k), Wd = k => w * (.75 + .25 * pierceK(k));
-  for (let i = n; i >= 0; i--) {
-    const al = i === n ? A(n) : A(i) - A(i + 1); if (al <= .002) continue;
-    ctx.globalAlpha = a0 * al;
-    polyStrip(tex, pts, i === n ? 1e9 : cuts[i], Wd(i));
+  // 2026-11-23：以前从炮口叠画几条长短不同的光束，每条在敌人处硬切、贴图按各自长度拉伸，叠起来一截一截的（断层）。
+  // 现在每一段先在不旋转的离屏画布上按整像素行拼出来：贴图按整条光束的长度连续取样，亮度和宽度在每个敌人前后 36 像素内平滑过渡，
+  // 亮度一样的相邻行合成一块画；行与行严格对齐所以没有缝，最后整张旋转、叠加贴到画面上
+  const a0 = ctx.globalAlpha, comp = ctx.globalCompositeOperation, n = cuts.length, R = 36;
+  const A = k => .45 + .55 * pierceK(k), Wd = k => w * (.75 + .25 * pierceK(k));
+  const segs = []; let Lt = 0; for (let i = 1; i < pts.length; i++) { const L = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); segs.push(L); Lt += L; }
+  if (Lt < 1) return;
+  const prof = s => {   // 离炮口 s 处的 [亮度, 宽度]
+    let k = 0; while (k < n && s > cuts[k]) k++;
+    let a = A(k), ww = Wd(k);
+    if (k > 0 && s - cuts[k - 1] < R / 2) { const u = .5 + (s - cuts[k - 1]) / R; a = A(k - 1) + (a - A(k - 1)) * u; ww = Wd(k - 1) + (ww - Wd(k - 1)) * u; }
+    else if (k < n && cuts[k] - s < R / 2) { const u = .5 - (cuts[k] - s) / R; a += (A(k + 1) - a) * u; ww += (Wd(k + 1) - ww) * u; }
+    return [a, ww];
+  };
+  const T = ctx.getTransform(), K = Math.hypot(T.a, T.b) || 1, iw = tex.width, ih = tex.height, g = BEAM_G, ns = pts.length - 1;
+  // 弯曲的光鞭：每一节两头按折角的角平分线切齐（斜接），相邻两节正好拼上，弯折处外侧不会漏出楔形缝
+  const dirs = segs.map((L, i) => [(pts[i + 1][0] - pts[i][0]) / (L || 1), (pts[i + 1][1] - pts[i][1]) / (L || 1)]);
+  const bis = (u, v) => { const x = u[0] + v[0], y = u[1] + v[1], l = Math.hypot(x, y) || 1; return [x / l, y / l]; };
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const ax = pts[i - 1][0], ay = pts[i - 1][1], bx = pts[i][0], by = pts[i][1], L = segs[i - 1], si = i - 1;
+    if (L < .5) { acc += L; continue; }
+    const th = Math.atan2(by - ay, bx - ax), ex = [Math.sin(th), -Math.cos(th)], ey = [Math.cos(th), Math.sin(th)], loc = v => [v[0] * ex[0] + v[1] * ex[1], v[0] * ey[0] + v[1] * ey[1]];
+    let tA = 0, tB = 0;
+    if (si > 0) { const f = loc(bis(dirs[si - 1], dirs[si])); tA = -f[0] / (f[1] || 1); }
+    if (si < ns - 1) { const f = loc(bis(dirs[si], dirs[si + 1])); tB = -f[0] / (f[1] || 1); }
+    const pw = Math.ceil(w * K) + 4, hw = pw / K / 2, eA = si > 0 ? Math.abs(tA) * hw + 1 : 0, eB = si < ns - 1 ? Math.abs(tB) * hw + 1 : 0;
+    const ph = Math.max(1, Math.round((L + eA + eB) * K)), st = acc - eA;   // 这一节在离屏画布上从离炮口 st 处开始
+    if (BEAM_OFF.width < pw || BEAM_OFF.height < ph) { BEAM_OFF.width = Math.max(BEAM_OFF.width, pw); BEAM_OFF.height = Math.max(BEAM_OFF.height, ph); }
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, pw, ph);
+    let y0 = 0, cur = null;
+    const flush = y1 => { if (!cur || y1 <= y0) return; const s0 = clamp(st + y0 / K, 0, Lt), s1 = clamp(st + y1 / K, 0, Lt), dw = cur[1] * K; g.globalAlpha = cur[0]; g.drawImage(tex, 0, Math.min(ih - .5, s0 / Lt * ih), iw, Math.max(.5, (s1 - s0) / Lt * ih), (pw - dw) / 2, y0, dw, y1 - y0); };
+    for (let y = 0; y < ph; y += 6) {
+      const p = prof(st + (y + 3) / K), q = [Math.round(p[0] * 200) / 200, Math.round(p[1] * 2) / 2];
+      if (!cur || q[0] !== cur[0] || q[1] !== cur[1]) { flush(y); y0 = y; cur = q; }
+    }
+    flush(ph);
+    ctx.save(); ctx.translate(ax, ay); ctx.rotate(th - Math.PI / 2);
+    if (eA || eB) { ctx.beginPath(); ctx.moveTo(-hw, -hw * tA); ctx.lineTo(hw, hw * tA); ctx.lineTo(hw, L + hw * tB); ctx.lineTo(-hw, L - hw * tB); ctx.closePath(); ctx.clip(); }
+    ctx.globalAlpha = a0; ctx.globalCompositeOperation = 'lighter';
+    ctx.drawImage(BEAM_OFF, 0, 0, pw, ph, -hw, -eA, pw / K, ph / K);
+    ctx.restore(); acc += L;
   }
-  ctx.globalAlpha = a0;
+  ctx.globalAlpha = a0; ctx.globalCompositeOperation = comp;
 }
 // 照射升温（普通光束、折射棱镜）：锁住的敌人会被慢慢烧热，每个敌人各自记热度，伤害 50% → 130%。
 // 开局约 2.5 秒烧满，攻速越高烧得越快（攻速仍然照常加伤害）；离开目标 1 秒内热度还在，之后半秒冷却到底
@@ -8205,7 +8243,7 @@ function drawBeam(b) {
     if (b.fall && b.fall.length) fxStripFall(tex, pts, w, b.fall);
     else for (let i = 1; i < pts.length; i++) fxStrip(tex, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], w);
     if (b.heat > .03) { const ht = fxGet('beam', '255,236,250'), a0 = ctx.globalAlpha; if (ht) { ctx.globalAlpha = a0 * b.heat * .8; for (let i = 1; i < pts.length; i++) fxStrip(ht, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], w * .6); ctx.globalAlpha = a0; } }   // 照射升温：越热越白
-    if (b.giga) for (let i = 0; i < 3; i++) { const x = pts[0][0] + rnd(-b.w, b.w) * .6; jagged(x, pts[0][1], x + rnd(-20, 20), rnd(0, pts[0][1]), b.c, .35, 1.5); }
+    // （无限粗光炮炮口原来有三道小电弧：方向写死朝屏幕上方，而且闪电是雷霆的专属，2026-11-23 去掉）
     const fx = fxGet('flare', b.c), e = pts[pts.length - 1];
     if (fx) {
       const s0 = Math.min(b.w, 40) * 3 + 24; ctx.save(); ctx.translate(pts[0][0], pts[0][1]); ctx.rotate(time * 6); ctx.drawImage(fx, -s0 / 2, -s0 / 2, s0, s0); ctx.restore();
