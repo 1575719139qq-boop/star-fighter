@@ -1216,6 +1216,7 @@ function worldShift(dx, dy) {
 // 玩家移动：只用键盘（方向键 / WASD，Shift 慢速）；触屏设备仍可用虚拟摇杆，鼠标不控制移动
 function survMove(dt, dx, dy) {
   const P = player; let vx = 0, vy = 0;
+  const fl = spinFx(); if (fl && fl.fly) { P.mvx = P.mvy = 0; return; }   // 赤焰必杀绕圈飞行时：画面固定，移动输入暂时无效
   const base = SURV_SPEED * survMoveK() * planetSlowK() * (ramOn() ? RAM_SPD : 1);   // 撞锤冲锋期间加速
   if (dx || dy) { const l = Math.hypot(dx, dy), sp = keys.ShiftLeft || keys.ShiftRight ? base * .55 : base; vx = dx / l * sp; vy = dy / l * sp; }
   else if (P.joy) { vx = P.joy.x * base; vy = P.joy.y * base; }
@@ -1225,7 +1226,7 @@ function survMove(dt, dx, dy) {
 // 机体转向最近的敌人（没有敌人时朝移动方向）
 function survAim(dt) {
   const P = player, cx = P.x, cy = P.y + HIT_OY;
-  const sp = spinFx(); if (sp) { P.ang = sp.ang; P.aimA = sp.ang; return; }   // 赤焰必杀甩尾时，机头方向由必杀接管
+  const sp = spinFx(); if (sp && sp.fly) { P.ang = sp.ang; P.aimA = sp.ang; return; }   // 赤焰必杀绕圈飞行时，机头方向由必杀接管
   let best = null, bd = 560 * 560;
   for (const e of enemies) { if (e.hp <= 0 || e.phased || !enemyOnScr(e)) continue; const d = (e.x - cx) ** 2 + (e.y - cy) ** 2; if (d < bd) { bd = d; best = e; } }
   // 首领和它的炮台也算瞄准目标
@@ -2878,8 +2879,9 @@ function drawEnemyLevels() {
 }
 function survSpawn(type, a, elite) {
   const R = DEMO ? 250 + rnd(0, 60) : survDoom ? 380 + rnd(0, 40) : 470 + rnd(0, 60);   // 终结潮刷得更近   // 主界面演示镜头拉近了，敌人在画面边缘外一点刷出来，才看得到它们冲进来被打爆
-  if (PLANET) for (let i = 0; i < 8 && planetSolidAt(player.x + Math.cos(a) * R, player.y + Math.sin(a) * R); i++) a += .8;   // 不在岩层里刷怪
-  spawnEnemy(type, player.x + Math.cos(a) * R, player.y + Math.sin(a) * R, { vx: 0, vy: 0 });
+  const fl = spinFx(), ox = fl && fl.fly ? fl.hx : player.x, oy = fl && fl.fly ? fl.hy : player.y;   // 赤焰必杀绕圈飞行时，按机体原位算刷怪圈（不然会刷进画面里）
+  if (PLANET) for (let i = 0; i < 8 && planetSolidAt(ox + Math.cos(a) * R, oy + Math.sin(a) * R); i++) a += .8;   // 不在岩层里刷怪
+  spawnEnemy(type, ox + Math.cos(a) * R, oy + Math.sin(a) * R, { vx: 0, vy: 0 });
   // 敌人等级：基础等级随存活时间上涨（每 30 秒 +1，越靠后的星区起点越高），个体再随机高 0–5 级；
   // 血量按等级成长（每级 +17%），经验跟着血量走。精英个体 +3 级、血量再翻倍，带金色光环
   const e = enemies[enemies.length - 1], base = survBaseLv();
@@ -4694,8 +4696,7 @@ function stepWorld(dt, speed = 1) {
   while (rem > 1e-4 && state === st) { const s = Math.min(rem, 1 / 60); update(s); rem -= s; }
   if (ultCut && ultCut.t >= ULT_CUT) { const id = ultCut.id; ultCut = null; fireUlt(id); }
 }
-// 赤焰必杀：尾焰扫到多远（从驾驶舱算起）
-const DRIFT_R = 400;
+// 赤焰必杀进行中（f.fly：机体正在屏幕上飞，位置和机头方向由必杀接管）
 function spinFx() { for (const f of ultFx) if (f.spin) return f; return null; }
 // 撞锤冲锋进行中？ramK：机体放大 / 能量罩的渐入渐出（0–1）
 const RAM_T = 4, RAM_R = 40, RAM_SPD = 1.7;
@@ -4755,57 +4756,86 @@ const ULT_FX = {
     f.shift = (dx, dy) => { for (const n of f.ns) { n.x += dx; n.y += dy; for (let i = 0; i < n.tr.length; i += 2) { n.tr[i] += dx; n.tr[i + 1] += dy; } } };
     return f;
   },
-  // 赤焰 · 炼狱风暴（2026-11-23 重做，用户的点子）：尾部喷口火力全开，机体原地漂移甩一整圈，加长的尾焰像鞭子一样扫过周围。
-  // 尾焰扫到的敌人（DRIFT_R 以内）吃 1 倍必杀伤害并被气浪掀出去；装原配主武器熔火喷流时还会被点燃 2 秒（别的主武器不点燃）。
-  // 节奏：0.18 秒尾焰拉长 → 0.75 秒甩一圈（先快后慢，最后略微甩过头再回正）→ 0.25 秒尾焰收回。机头方向由这里接管（见 survAim），主武器照常开火，所以会跟着甩一圈。
-  // 原来是「火环 + 火柱」和「全屏标记 + 连环爆破」两个版本，都换成这一个；颜色跟战机
+  // 赤焰 · 炼狱风暴（2026-11-23 第三版，用户：画面固定、飞机不固定，沿屏幕外圈飞一圈留火墙）：
+  // ① 机体离开原位，划一道弧线切到屏幕上边（0.18 秒），机头朝前贴着屏幕四边飞一整圈（1 秒），机尾喷口火力全开，飞过的地方留下火墙；
+  // ② 划弧线飞回原位（0.24 秒），同时整圈火墙向机体收拢（0.55 秒），火墙扫到的敌人吃 1 倍必杀伤害（装熔火喷流时还被点燃 2 秒）；
+  // ③ 火墙收到机体身边时炸开，把贴身的敌人掀出去。
+  // 飞行期间机体真的在屏幕上移动（player.x / y 跟着走，世界不动，移动输入暂时无效，见 survMove / survAim / survSpawn），全程无敌
   crimson(P, d, c) {
-    const fire = P.weapon === 'flame', WIND = .18, SPIN = .75, OUT = .25, dir = Math.random() < .5 ? 1 : -1;
-    const a00 = SURV ? P.ang || 0 : 0, f = { t: 0, dur: WIND + SPIN + OUT, spin: true, ang: a00, a0: null, hit: new Set(), len: 0 };
-    const back = p => p < .8 ? 1.04 * (1 - (1 - p / .8) ** 1.5) : 1.04 - .04 * (p - .8) / .2;   // 先快后慢，甩过头 4% 再回正
-    const tail = () => f.ang + Math.PI / 2;   // 尾部朝向（屏幕坐标里的角度）：机头朝 ang 时，尾巴在正后方
-    noise(.9, .28, 420); tone(120, .9, 'sawtooth', .08, 3);
+    const fire = P.weapon === 'flame', OUT = .18, LAP = 1, BACK = .24, CLOSE = .55, T1 = OUT + LAP, hx = P.x, hy = P.y, rad = 64, dir = Math.random() < .5 ? 1 : -1;   // dir：顺时针 / 逆时针随机
+    // 飞行范围：贴着屏幕四边（主界面演示镜头拉近了，按看得见的范围算）
+    const B = DEMO ? { x0: hx - (W / 2 / DEMO_Z - 26), x1: hx + (W / 2 / DEMO_Z - 26), y0: hy + HIT_OY - (DEMO_Y / DEMO_Z - 30), y1: hy + HIT_OY + ((H - DEMO_Y) / DEMO_Z - 30) } : { x0: 28, x1: W - 28, y0: 48, y1: H - 42 };
+    // 圆角矩形一圈的路线：从上边偏一侧的切入点出发，每 6 像素一个点（逆时针时左右镜像）
+    const ex = Math.min(120, (B.x1 - hx) * .5), mir = x => dir > 0 ? x : 2 * hx - x, pts = [];
+    const seg = (xa, ya, xb, yb) => { const n = Math.max(1, Math.round(Math.hypot(xb - xa, yb - ya) / 6)); for (let k = 0; k < n; k++) pts.push([mir(xa + (xb - xa) * k / n), ya + (yb - ya) * k / n]); };
+    const arc = (cx, cy, a0) => { const n = Math.round(rad * Math.PI / 2 / 6); for (let k = 0; k < n; k++) { const a = a0 + k / n * Math.PI / 2; pts.push([mir(cx + Math.cos(a) * rad), cy + Math.sin(a) * rad]); } };
+    seg(hx + ex, B.y0, B.x1 - rad, B.y0); arc(B.x1 - rad, B.y0 + rad, -Math.PI / 2); seg(B.x1, B.y0 + rad, B.x1, B.y1 - rad); arc(B.x1 - rad, B.y1 - rad, 0);
+    seg(B.x1 - rad, B.y1, B.x0 + rad, B.y1); arc(B.x0 + rad, B.y1 - rad, Math.PI / 2); seg(B.x0, B.y1 - rad, B.x0, B.y0 + rad); arc(B.x0 + rad, B.y0 + rad, Math.PI); seg(B.x0 + rad, B.y0, hx + ex, B.y0);
+    const N = pts.length, at = u => { const q = clamp(u, 0, 1) * N, k = Math.floor(q) % N, k2 = (k + 1) % N, fr = q - Math.floor(q); return [pts[k][0] + (pts[k2][0] - pts[k][0]) * fr, pts[k][1] + (pts[k2][1] - pts[k][1]) * fr]; };
+    const bez = (x0, y0, x1, y1, x2, y2, e) => [(1 - e) ** 2 * x0 + 2 * e * (1 - e) * x1 + e * e * x2, (1 - e) ** 2 * y0 + 2 * e * (1 - e) * y1 + e * e * y2];
+    const [sx, sy] = pts[0];
+    // 火墙：每 18 像素一团翻滚的火，隔一团加一条朝里舔的火舌
+    const wall = []; for (let k = 0, n = 0; k < N; k += 3, n++) wall.push({ x: pts[k][0], y: pts[k][1], u: k / N, n, ph: rnd(0, TAU), sz: rnd(58, 78), rs: rnd(1.5, 3) * (Math.random() < .5 ? 1 : -1), fl: Math.random() < .5 });
+    // 某个点在「火墙收拢到几成」时会被扫到：1 = 火墙原来的位置，0 = 机体所在的位置
+    const sOf = (x, y) => { const dx = x - hx, dy = y - hy; return Math.max(dx > 0 ? dx / (B.x1 - hx) : -dx / (hx - B.x0), dy > 0 ? dy / (B.y1 - hy) : -dy / (hy - B.y0)); };
+    const f = { t: 0, dur: T1 + CLOSE + .3, spin: true, fly: true, ang: SURV ? P.ang || 0 : 0, hx, hy, px: hx, py: hy, lapU: 0, s: 1, hit: new Set(), burst: false };
+    const burn = t => { if (fire && t.kind === 'e') { const e = t.ref; e.burn = Math.max(e.burn || 0, 2); e.burnLv = Math.max(e.burnLv || 0, Math.min(5, P.lv)); e.burnK = P.s.dmgMul; e.burnC = c; } };
+    const strike = t => { f.hit.add(t.ref); ultHit(t, d, c); burn(t); fxPart(fire ? 'pyre' : 'flare', t.x, t.y, 90, .3, { c, g0: .3, g1: 1 }); };
+    noise(1.3, .28, 420); tone(120, 1.2, 'sawtooth', .08, 3);
     f.upd = dt => {
-      const p = clamp((f.t - WIND) / SPIN, 0, 1), h = hitPt();
-      f.ang = a00 + dir * TAU * (f.t < WIND ? 0 : back(p));
-      f.len = DRIFT_R * (f.t < WIND ? f.t / WIND : f.t > WIND + SPIN ? Math.max(0, 1 - (f.t - WIND - SPIN) / OUT) : 1);
-      const a1 = tail();
-      if (f.a0 !== null && f.t >= WIND && p < 1) {
-        const lo = dir > 0 ? f.a0 : a1, span = Math.abs(a1 - f.a0);   // 这一帧尾焰扫过的角度范围
-        for (const t of ultTargets(40)) {
-          if (f.hit.has(t.ref)) continue;
-          const dx = t.x - h.x, dy = t.y - h.y, dd = Math.hypot(dx, dy) || 1; if (dd > DRIFT_R + tReach(t)) continue;
-          const da = ((Math.atan2(dy, dx) - lo) % TAU + TAU) % TAU, wa = Math.atan2(46 + tReach(t), Math.max(30, dd));
-          if (!(da <= span + wa || da >= TAU - wa)) continue;
-          f.hit.add(t.ref); ultHit(t, d, c);
-          if (t.kind === 'e') { push(t.ref, dx / dd * 300, dy / dd * 300); if (fire) { const e = t.ref; e.burn = Math.max(e.burn || 0, 2); e.burnLv = Math.max(e.burnLv || 0, Math.min(5, P.lv)); e.burnK = P.s.dmgMul; e.burnC = c; } }
-          fxPart(fire ? 'pyre' : 'flare', t.x, t.y, 90, .3, { c, g0: .3, g1: 1 });
-        }
-        // 尾焰末端甩出去的火星
-        for (let k = 0; k < 3; k++) { const r = rnd(.35, 1) * f.len, a = a1 + rnd(-.12, .12), v = rnd(90, 240); addPart({ t: 'glow', x: h.x + Math.cos(a) * r, y: h.y + Math.sin(a) * r, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rnd(.25, .5), max: .5, size: rnd(12, 26), c: Math.random() < .5 ? c : rgbMix(c, '255,255,255', .5), fl: fire ? 1 : undefined }); }
-        shake = Math.max(shake, 6);
+      P.inv = Math.max(P.inv, .6);
+      // 机体的位置和朝向
+      const ox = f.px, oy = f.py;
+      if (f.t < OUT) [f.px, f.py] = bez(hx, hy, hx, B.y0, sx, sy, f.t / OUT);
+      else if (f.t < T1) { const p = (f.t - OUT) / LAP; f.lapU = p * .8 + p * p * (3 - 2 * p) * .2; [f.px, f.py] = at(f.lapU); }
+      else if (f.t < T1 + BACK) { f.lapU = 1; const k = (f.t - T1) / BACK; [f.px, f.py] = bez(sx, sy, hx + dir * ex * 2.4, B.y0 + 30, hx, hy, k * (1.3 - .3 * k)); }
+      else { f.lapU = 1; f.px = hx; f.py = hy; f.fly = false; }
+      if (f.fly) { const vx = f.px - ox, vy = f.py - oy; if (vx || vy) f.ang = Math.atan2(vx, -vy); P.mvx = P.mvy = 0; }
+      P.x = f.px; P.y = f.py; if (!SURV) { P.tx = P.x; P.ty = P.y; }
+      // 飞的时候：尾焰甩出的火星；擦到身边的敌人先挨一下
+      if (f.fly) {
+        const ta = f.ang + Math.PI / 2;
+        for (let k = 0; k < 2; k++) addPart({ t: 'glow', x: f.px + Math.cos(ta) * rnd(20, 90) + rnd(-12, 12), y: f.py + HIT_OY + Math.sin(ta) * rnd(20, 90) + rnd(-12, 12), vx: rnd(-70, 70), vy: rnd(-70, 70), life: rnd(.25, .5), max: .5, size: rnd(12, 26), c: Math.random() < .5 ? c : rgbMix(c, '255,255,255', .5), fl: fire ? 1 : undefined });
+        if (f.t >= OUT && f.t < T1) for (const t of ultTargets(40)) if (!f.hit.has(t.ref) && Math.hypot(t.x - f.px, t.y - f.py) < 70 + tReach(t)) strike(t);
+        shake = Math.max(shake, 3);
       }
-      f.a0 = a1;
+      // 火墙收拢：扫过谁就烧谁
+      if (f.t >= T1) {
+        const k = Math.min(1, (f.t - T1) / CLOSE); f.s = 1 - .88 * k * k;
+        for (const t of ultTargets(40)) if (!f.hit.has(t.ref) && sOf(t.x, t.y) >= f.s) strike(t);
+        if (k < 1) shake = Math.max(shake, 4);
+        if (k >= 1 && !f.burst) {   // 收到机体身边：炸开，把贴身的敌人掀出去
+          f.burst = true; flash = Math.max(flash, .3); shake = Math.max(shake, 16); noise(.6, .3, 500); tone(90, .5, 'sawtooth', .08, -.5);
+          fxPart(fire ? 'pyre' : 'nova', hx, hy + HIT_OY, 320, .45, { c, g0: .25, g1: 1 });
+          for (const t of ultTargets(40)) { if (!f.hit.has(t.ref)) strike(t); if (t.kind === 'e') { const dx = t.x - hx, dy = t.y - hy, dd = Math.hypot(dx, dy) || 1; if (dd < 190) push(t.ref, dx / dd * 300, dy / dd * 300); } }
+        }
+      }
     };
     f.drw = () => {
-      if (f.len < 4) return;
-      const h = hitPt(), im = fxGet('ufirepillar', c), hot = fxGet('ufirepillar', rgbMix(c, '255,255,255', .6)), p = clamp((f.t - WIND) / SPIN, 0, 1);
-      const w0 = 132 * (.55 + .45 * Math.min(1, f.len / DRIFT_R)), base = 24 * SHIP_K * 2;   // 尾焰从喷口后面一点开始
+      const deep = rgbMix(c, '255,70,10', .55);   // 火墙主体偏橙红一些，叠起来才像火而不是一片白
+      const im = fxGet('ufirepillar', c), hot = fxGet('ufirepillar', rgbMix(c, '255,255,255', .5)), plume = fxGet('ufirepillar', deep), ball = fxGet('flame', deep);
       ctx.globalCompositeOperation = 'lighter';
-      const plume = (a, len, w, al, img) => {
-        if (!img || al <= .01) return;
-        ctx.save(); ctx.translate(h.x + Math.cos(a) * base, h.y + Math.sin(a) * base); ctx.rotate(a + Math.PI / 2); ctx.globalAlpha = al;
-        ctx.drawImage(img, -w / 2, -len, w, len); ctx.restore();
-      };
-      // 甩的时候后面拖着几道越来越淡的残焰，看起来是一整片扫过去的火
-      const lag = f.t >= WIND && p < 1 ? Math.min(1.1, Math.abs(f.ang - a00) ) : 0;
-      for (let k = 5; k >= 1; k--) plume(tail() - dir * lag * k / 5 * .9, f.len * (1 - k * .06), w0 * (1 - k * .05), .34 * (1 - k / 6), im);
-      const jit = 1 + .06 * Math.sin(time * 46);
-      plume(tail(), f.len * jit, w0, .85, im); plume(tail(), f.len * .6 * jit, w0 * .38, .4, hot);   // 只在根部叠一点亮芯：整条太白会像光柱
-      drawGlow(h.x + Math.cos(tail()) * base, h.y + Math.sin(tail()) * base, 54, c, .6); drawGlow(h.x, h.y, 110, c, .18);
+      // 火墙：连成一片翻滚的火，火舌朝里舔；收拢时火团变大、数量抽稀（不然叠成一片白），炸开后熄掉
+      const fade = f.burst ? Math.max(0, 1 - (f.t - T1 - CLOSE) / .25) : 1, grow = 1 + (1 - f.s) * .35, skip = Math.max(1, Math.round(1 / f.s));
+      if (fade > 0) for (const q of wall) {
+        if (q.u > f.lapU || q.n % skip) continue;
+        const born = Math.min(1, (f.lapU - q.u) * LAP * 7 + .25), x = hx + (q.x - hx) * f.s, y = hy + (q.y - hy) * f.s;
+        if (ball) { const sz = q.sz * grow * born * (1 + .12 * Math.sin(time * 9 + q.ph)); ctx.save(); ctx.translate(x, y); ctx.rotate(q.ph + time * q.rs); ctx.globalAlpha = .42 * fade; ctx.drawImage(ball, -sz / 2, -sz / 2, sz, sz); ctx.restore(); }
+        if (im && q.n % (2 * skip) === 0) {
+          const a = Math.atan2(hy - y, hx - x), hgt = (70 + 30 * Math.sin(time * 15 + q.ph)) * (1 + (1 - f.s) * .6) * born, wd = 64;
+          ctx.save(); ctx.translate(x, y); ctx.rotate(a + Math.PI / 2); if (q.fl) ctx.scale(-1, 1); ctx.globalAlpha = .7 * fade; ctx.drawImage(im, -wd / 2, -hgt, wd, hgt); ctx.restore();
+        }
+      }
       ctx.globalAlpha = 1;
+      // 机尾喷口火力全开：一大股尾焰拖在身后
+      if (f.fly) {
+        const ta = f.ang + Math.PI / 2, cs = Math.cos(ta), sn = Math.sin(ta), len = 210 * Math.min(1, f.t / .12) * (1 + .1 * Math.sin(time * 45)), bx = f.px + cs * 14, by = f.py + HIT_OY + sn * 14;
+        for (const [img, w, l, al] of [[plume, 118, len, 1], [im, 84, len * .85, .8], [hot, 46, len * .55, .55]]) { if (!img) continue; ctx.save(); ctx.translate(bx, by); ctx.rotate(ta + Math.PI / 2); ctx.globalAlpha = al; ctx.drawImage(img, -w / 2, -l, w, l); ctx.restore(); }
+        if (ball) for (const [dd, sz] of [[14, 62], [46, 52], [84, 40]]) { ctx.save(); ctx.translate(bx + cs * dd, by + sn * dd); ctx.rotate(time * 7 + dd); ctx.globalAlpha = .6; ctx.drawImage(ball, -sz / 2, -sz / 2, sz, sz); ctx.restore(); }
+        ctx.globalAlpha = 1; drawGlow(bx, by, 90, c, .8);
+      }
     };
-    f.over = () => { const a = Math.max(0, .22 - f.t * .9); if (a > 0) { ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(${c},${a})`; ctx.fillRect(0, 0, W, H); } };
+    f.over = () => { const a = Math.max(0, .2 - f.t * .9); if (a > 0) { ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(${c},${a})`; ctx.fillRect(0, 0, W, H); } };
     return f;
   },
   // 暗影 · 次元斩（2026-11-23 重做，用户的点子：化刃 → 静止 → 爆开）：
@@ -9167,7 +9197,7 @@ function render() {
   if (shake > 0 && (state === 'play' || demoOn())) ctx.translate(rnd(-shake, shake) * .5, rnd(-shake, shake) * .5);
   drawBg(time);
   if (state === 'title') {
-    if (demoOn()) { ctx.save(); ctx.translate(W / 2, DEMO_Y); ctx.scale(DEMO_Z, DEMO_Z); ctx.translate(-player.x, -(player.y + HIT_OY)); drawWorld(true); ctx.restore(); }
+    if (demoOn()) { ctx.save(); const cam = spinFx(), camX = cam ? cam.hx : player.x, camY = cam ? cam.hy : player.y; ctx.translate(W / 2, DEMO_Y); ctx.scale(DEMO_Z, DEMO_Z); ctx.translate(-camX, -(camY + HIT_OY)); drawWorld(true); ctx.restore(); }   // 赤焰必杀绕圈时镜头停在原位
     ctx.restore();
     if (demoOn()) { drawUltOver(); drawDemoShade(); drawUltCut(); }
     drawTitle(); return;
