@@ -4946,24 +4946,44 @@ const ULT_FX = {
     };
     return f;
   },
-  // 夜枭 · 超新星：机体聚能 0.3 秒，然后两道新星冲击波扫过全屏，把敌人向外推开
+  // 夜枭 · 超新星（2026-11-23 改，用户：炸三次）：机体聚能 0.3 秒，然后连炸三次、一次比一次猛，
+  // 每一炸都有一道新星冲击波扫过全屏，把敌人向外推开；两炸之间机体再聚一下能。
+  // 三次的伤害是 25% / 30% / 45%，加起来还是 1 倍必杀伤害（原来是两道各 50%），首领吃到的总量也和原来一样；
+  // 推力 60 / 80 / 380（原来两次各 260，合计一样）：前两炸只是震一下，最后一炸才把敌人掀飞——前面推太狠，敌人被推出屏幕就吃不到后面两炸了
   owl(P, d, c) {
-    const f = { t: 0, dur: 1.6, rings: [{ t0: .3, hit: new Set(), R: 0 }, { t0: .52, hit: new Set(), R: 0 }], boom: false }, maxR = Math.hypot(W, H) * .8;
+    const T0 = [.3, .62, .94], WGT = [.25, .3, .45], PUSH = [60, 80, 380], TRAV = .45, WIN = [.3, .16, .16];
+    const f = { t: 0, dur: T0[2] + TRAV * 1.6 + .05, rings: T0.map((t0, i) => ({ t0, i, hit: new Set(), R: 0, on: false })) }, maxR = Math.hypot(W, H) * .8;
+    const hitW = (t, w) => t.kind === 'b' ? applyHit(t, w * Math.min(d * 5, t.ref.maxHp * .16), t.x, t.y, c, .25) : ultHit(t, d * w, c);   // 首领：三次合计和原来两次一样（最多 16% 血）
     f.upd = dt => {
       const cx = P.x, cy = P.y + HIT_OY;
-      if (f.t < .3) for (let i = 0; i < 3; i++) { const a = rnd(0, TAU), r = rnd(70, 140); addPart({ t: 'glow', x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, vx: -Math.cos(a) * r * 3.2, vy: -Math.sin(a) * r * 3.2, life: .3, max: .3, size: rnd(8, 14), c }); }
-      if (!f.boom && f.t >= .3) { f.boom = true; flash = Math.max(flash, .5); shake = Math.max(shake, 18); noise(.9, .3, 900); tone(110, .8, 'sawtooth', .08, -.5); }
+      // 每一炸之前：光点往机体聚拢
+      for (let n = 0; n < 3; n++) if (f.t < T0[n] && f.t >= T0[n] - WIN[n]) for (let i = 0; i < 3; i++) { const a = rnd(0, TAU), r = rnd(70, 140), w = WIN[n]; addPart({ t: 'glow', x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, vx: -Math.cos(a) * r / w * .96, vy: -Math.sin(a) * r / w * .96, life: w, max: w, size: rnd(8, 14), c }); }
       for (const r of f.rings) {
-        const k = (f.t - r.t0) / .5; if (k <= 0) continue; r.R = maxR * Math.min(1, k) ** .75;
-        for (const t of ultTargets(40)) if (!r.hit.has(t.ref) && Math.hypot(t.x - cx, t.y - cy) < r.R) { r.hit.add(t.ref); ultHit(t, d * .5, c); if (t.kind === 'e') { const dx = t.x - cx, dy = t.y - cy, l = Math.hypot(dx, dy) || 1; push(t.ref, dx / l * 260, dy / l * 260); } }
+        if (f.t < r.t0) continue;
+        if (!r.on) {   // 炸：一次比一次响、一次比一次亮
+          r.on = true; const big = r.i === 2;
+          flash = Math.max(flash, [.32, .4, .6][r.i]); shake = Math.max(shake, [10, 13, 22][r.i]); noise(big ? .9 : .4, big ? .3 : .2, [1300, 1100, 800][r.i]); tone([150, 130, 95][r.i], big ? .8 : .3, 'sawtooth', .08, -.5);
+          if (big) for (let i = 0; i < 26; i++) { const a = rnd(0, TAU), v = rnd(380, 760); addPart({ t: 'glow', x: cx, y: cy, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rnd(.35, .6), max: .6, size: rnd(8, 16), c: Math.random() < .5 ? c : '255,255,255' }); }
+        }
+        const k = (f.t - r.t0) / TRAV; r.R = maxR * Math.min(1, k) ** .75;
+        for (const t of ultTargets(40)) if (!r.hit.has(t.ref) && Math.hypot(t.x - cx, t.y - cy) < r.R) { r.hit.add(t.ref); hitW(t, WGT[r.i]); if (t.kind === 'e') { const dx = t.x - cx, dy = t.y - cy, l = Math.hypot(dx, dy) || 1; push(t.ref, dx / l * PUSH[r.i], dy / l * PUSH[r.i]); } }
       }
     };
     f.drw = () => {
       const cx = P.x, cy = P.y + HIT_OY; ctx.globalCompositeOperation = 'lighter';
-      if (f.t < .32) { const k = f.t / .3; drawGlow(cx, cy, 40 + 90 * k, c, .5 + .5 * k); drawGlow(cx, cy, 14 + 30 * k, '255,255,255', .9); }
+      // 聚能：每一炸之前机体上的光团鼓起来
+      for (let n = 0; n < 3; n++) { const k = (f.t - (T0[n] - WIN[n])) / WIN[n]; if (k > 0 && k < 1.08) { const z = n ? .8 : 1; drawGlow(cx, cy, (40 + 90 * k) * z, c, .5 + .5 * k); drawGlow(cx, cy, (14 + 30 * k) * z, '255,255,255', .9); } }
       const nv = fxGet('nova', c), fl = fxGet('flare', rgbMix(c, '255,255,255', .7));
-      for (const r of f.rings) { const k = (f.t - r.t0) / .5; if (k <= 0 || k > 1.6 || !nv) continue; ctx.globalAlpha = Math.max(0, 1 - k / 1.6); const s = r.R * 2.2; ctx.save(); ctx.translate(cx, cy); ctx.rotate(r.t0 * 7 + k); ctx.drawImage(nv, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; }
-      if (f.t >= .3 && f.t < .7 && fl) { const k = (f.t - .3) / .4, s = 380 * (1 - k * .4); ctx.globalAlpha = 1 - k; ctx.save(); ctx.translate(cx, cy); ctx.rotate(k * 2); ctx.drawImage(fl, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; }
+      // 冲击波：最后一炸后面再跟一圈
+      if (nv) for (const r of f.rings) {
+        const k = (f.t - r.t0) / TRAV; if (k <= 0 || k > 1.6) continue;
+        const al = Math.max(0, 1 - k / 1.6) * [.7, .85, 1][r.i], s = r.R * 2.2;
+        ctx.globalAlpha = al; ctx.save(); ctx.translate(cx, cy); ctx.rotate(r.t0 * 7 + k); ctx.drawImage(nv, -s / 2, -s / 2, s, s); ctx.restore();
+        if (r.i === 2 && k > .2) { const s2 = maxR * Math.min(1, k - .2) ** .75 * 2.2; ctx.globalAlpha = al * .6; ctx.save(); ctx.translate(cx, cy); ctx.rotate(-k * 1.3); ctx.drawImage(nv, -s2 / 2, -s2 / 2, s2, s2); ctx.restore(); }
+      }
+      // 爆心的星芒：一次比一次大
+      if (fl) for (const r of f.rings) { const k = (f.t - r.t0) / (r.i === 2 ? .45 : .26); if (k < 0 || k >= 1) continue; const s = [250, 330, 480][r.i] * (1 - k * .4); ctx.globalAlpha = 1 - k; ctx.save(); ctx.translate(cx, cy); ctx.rotate(k * 2 + r.i * .6); ctx.drawImage(fl, -s / 2, -s / 2, s, s); ctx.restore(); }
+      ctx.globalAlpha = 1;
     };
     return f;
   },
@@ -5077,22 +5097,26 @@ const ULT_FX = {
     };
     return f;
   },
-  // 黄金 · 圣辉审判：机头射出一道巨大的圣光光束，绕机体扫过一整圈
+  // 黄金 · 圣辉审判（2026-11-23 改，用户：绕两圈）：机头射出一道巨大的圣光光束，绕机体扫两整圈，越扫越快。
+  // 每一圈扫到的敌人各吃 50% 必杀伤害，合计还是 1 倍（原来是一圈 100%），首领吃到的总量也和原来一样
   gold(P, d, c) {
-    const f = { t: 0, dur: 1.75, a0: null, hit: new Set() };
-    const ang = () => (SURV ? P.ang || 0 : 0) - Math.PI / 2 + clamp((f.t - .18) / 1.1, 0, 1) ** 1.2 * TAU;
+    const T_IN = .18, SWEEP = 1.35, LAPS = 2, T_END = T_IN + SWEEP;
+    const f = { t: 0, dur: T_END + .47, a0: null, hit: [new Set(), new Set()] };
+    const prog = () => clamp((f.t - T_IN) / SWEEP, 0, 1) ** 1.1 * LAPS;   // 已经扫了几圈
+    const ang = () => (SURV ? P.ang || 0 : 0) - Math.PI / 2 + prog() * TAU;
+    const hitW = t => t.kind === 'b' ? applyHit(t, Math.min(d * 5, t.ref.maxHp * .08) / LAPS, t.x, t.y, c, .25) : ultHit(t, d / LAPS, c);
     f.upd = dt => {
-      const cx = P.x, cy = P.y + HIT_OY, a1 = ang();
-      if (f.a0 !== null && f.t > .18) for (const t of ultTargets(60)) {
-        if (f.hit.has(t.ref)) continue;
+      const cx = P.x, cy = P.y + HIT_OY, a1 = ang(), hs = f.hit[Math.min(LAPS - 1, Math.floor(prog()))];   // 每一圈各记一次命中
+      if (f.a0 !== null && f.t > T_IN) for (const t of ultTargets(60)) {
+        if (hs.has(t.ref)) continue;
         const da = ((Math.atan2(t.y - cy, t.x - cx) - f.a0) % TAU + TAU) % TAU, wa = Math.atan2(50 + (t.r || 0), Math.max(30, Math.hypot(t.x - cx, t.y - cy)));
-        if (da <= a1 - f.a0 + wa || da >= TAU - wa) { f.hit.add(t.ref); ultHit(t, d, c); fxPart('flare', t.x, t.y, 70, .3, { c: '255,240,190', g0: .3, g1: 1 }); }
+        if (da <= a1 - f.a0 + wa || da >= TAU - wa) { hs.add(t.ref); hitW(t); fxPart('flare', t.x, t.y, 70, .3, { c: '255,240,190', g0: .3, g1: 1 }); }
       }
       f.a0 = a1;
-      if (f.t > .18 && f.t < 1.3) shake = Math.max(shake, 4);
+      if (f.t > T_IN && f.t < T_END) shake = Math.max(shake, 4);
     };
     f.drw = () => {
-      const cx = P.x, cy = P.y + HIT_OY, k = f.t < .18 ? f.t / .18 : f.t > 1.35 ? Math.max(0, 1 - (f.t - 1.35) / .4) : 1, a = ang();
+      const cx = P.x, cy = P.y + HIT_OY, k = f.t < T_IN ? f.t / T_IN : f.t > T_END + .07 ? Math.max(0, 1 - (f.t - T_END - .07) / .4) : 1, a = ang();
       ctx.globalCompositeOperation = 'lighter';
       drawGlow(cx, cy, 90 * k + 1, c, .8 * k);
       const fl = fxGet('flare', c); if (fl) { const s = 180 * k + 1; ctx.save(); ctx.translate(cx, cy); ctx.rotate(f.t * 3); ctx.globalAlpha = .7 * k; ctx.drawImage(fl, -s / 2, -s / 2, s, s); ctx.restore(); ctx.globalAlpha = 1; }
