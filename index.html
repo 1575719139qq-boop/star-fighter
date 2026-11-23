@@ -1857,7 +1857,7 @@ function siegeMove(e, edt) {
 function defenseWon(p) {
   if (p.owned) return; const hub = p.hub;
   p.defHubK = hub.hp / hub.max;
-  floatText(W / 2, SURV_Y - 160, '守护成功', 24, '#8ff0ff', 2);
+  floatText(W / 2, SURV_Y - 160, '防守成功', 24, '#8ff0ff', 2);
   planetCaptured(p);
 }
 function defenseLost(p) {
@@ -1872,7 +1872,7 @@ function planetCaptured(p) {
   gainMat(2, 1);   // 占领星球给 1 个星核
   flash = .5; sfxWin();
   const P = player, took = survT - p.bornT, hold = survT - Math.max(0, p.orbitT0);
-  const stars = [{ n: '守护成功', ok: true }, { n: '无伤', ok: !p.hurt }, { n: '基地完好', sub: '指挥中心剩 60% 以上', ok: (p.defHubK ?? 1) >= .6 }];
+  const stars = [{ n: '防守成功', ok: true }, { n: '无伤', ok: !p.hurt }, { n: '基地完好', sub: '指挥中心剩 60% 以上', ok: (p.defHubK ?? 1) >= .6 }];
   const got = stars.filter(s => s.ok).length, bonus = Math.round((STAGE_REWARD + (got - 1) * 60) * tierK(runTier));
   // 已占领的星球再打一次（难度阶梯）：不重复计入，只记录通关过的最高难度
   const done0 = sectorsDone(), old = p.sec >= 0 ? ownedAt(p.sec, p.slot) : null, tierUp = !!old && (old.tier || 0) < runTier;
@@ -1889,7 +1889,7 @@ const BUILDS = {
   repair: { name: '维修站', gl: 'cross', c: '110,255,160', cost: [20, 32, 50], hp: 100, desc: lv => `每 ${20 - 4 * (lv - 1)} 秒修护甲和建筑` },
   miner: { name: '采矿机', gl: 'ore', c: '255,210,90', cost: [12, 20, 32], hp: 100, desc: lv => `每 ${(6 - 1.5 * (lv - 1)).toFixed(1)} 秒产 1 矿石` },
   aegis: { name: '护盾', gl: 'bubble', c: '110,220,255', cost: [1, 1, 1], hp: 1, desc: lv => `${AEGIS_N(lv)} 片护盾绕星球快转，挡敌弹、撞开敌机` },   // 护盾环（2026-11-23），只走建造卡
-  mod: { name: '指挥中心', gl: 'wrench', c: '120,220,255', cost: [10], hp: 120, one: true, desc: () => '守护阶段敌军的目标' },   // 只给指挥中心用（改装台 2026-11-22 删掉了）
+  mod: { name: '指挥中心', gl: 'wrench', c: '120,220,255', cost: [10], hp: 120, one: true, desc: () => '防守阶段敌军的目标' },   // 只给指挥中心用（改装台 2026-11-22 删掉了）
 };
 const BUILD_IDS = Object.keys(BUILDS);
 // 2026-11-22：护盾塔、信标删掉；炮塔 / 导弹井变强变贵，开局先造采矿机最划算
@@ -3094,7 +3094,7 @@ const UPGRADES = [
   { id: 'bomb', name: '炸弹专家', icon: '炸', rar: 0, max: 3, desc: '炸弹 +2，炸弹伤害 +50%', apply: (s, p) => { p.bombs = Math.min(9, p.bombs + 2); s.bombDmg += .5; } },
   { id: 'heal', name: '紧急维修', icon: '修', rar: 0, max: 99, desc: '立即修复全部护甲', apply: (s, p) => { p.armor = p.maxArmor; }, cond: p => p.armor < p.maxArmor },
   { id: 'spread', name: '扩散炮', icon: '散', rar: 1, max: 3, desc: '两侧各增加 1 道斜向散射弹', apply: s => s.spread++ },
-  { id: 'pierce', name: '穿甲弹头', icon: '穿', rar: 1, max: 3, desc: '子弹可额外穿透 1 个敌人', apply: s => s.pierce++ },
+  { id: 'pierce', name: '贯穿弹头', icon: '贯', rar: 1, max: 3, desc: '子弹可额外穿透 1 个敌人', apply: s => s.pierce++ },
   { id: 'shield', name: '护盾发生器', icon: '盾', rar: 1, max: 3, desc: '抵挡 1 次伤害，每 12 秒充能 1 层', apply: s => { s.shieldMax++; s.shield++; } },
   { id: 'crit', name: '弱点解析', icon: '暴', rar: 1, max: 4, desc: '12% 几率造成 2.5 倍暴击伤害', apply: s => s.crit += .12 },
   { id: 'blast', name: '殉爆反应', icon: '爆', rar: 1, max: 3, desc: '击毁敌机时引发范围爆炸', apply: s => s.blast++ },
@@ -3124,7 +3124,7 @@ for (const id of WEAPON_IDS) UPGRADES.push({ id: 'main_' + id, name: '换装：'
   desc: WEAPONS[id].desc, apply: (s, p) => { p.weapon = id; }, cond: p => p.weapon !== id });
 UPGRADES.push(
   // 主炮等级（子弹数量 / 光束宽度）只能靠这张卡提升
-  { id: 'power', name: '主炮升级', icon: 'P', rar: 0, max: 999, noStack: true, get desc() { return ({ vulcan: '子弹数量增加', laser: '光束加宽', wave: '镰刃变大', thunder: '闪电数量增加', flame: '火焰范围变大' })[player && player.weapon] || '主炮等级 +1'; }, apply: (s, p) => { p.lv++; }, cond: p => p.lv < 5 },
+  { id: 'power', name: '主炮升级', icon: 'P', rar: 0, max: 999, noStack: true, get desc() { return ({ vulcan: '子弹数量增加', laser: '光束加宽', wave: '镰刃变大', thunder: '闪电数量增加', flame: '火焰范围变大', rail: '轨道弹加粗' })[player && player.weapon] || '主炮等级 +1'; }, apply: (s, p) => { p.lv++; }, cond: p => p.lv < 5 },
 );
 // ================= 武器进化分支 =================
 const BRANCHES = {
@@ -3132,7 +3132,7 @@ const BRANCHES = {
     { id: 'ap', name: '穿甲弹', icon: '穿', desc: '金色重弹：伤害 +40%，每发可穿透 3 个敌人' },
     { id: 'he', name: '引爆弹', icon: '爆', desc: '子弹命中时引爆，对周围敌人造成范围伤害' },
     { id: 'fan', name: '无限扩散', icon: '扩', desc: '弹幕铺满扇面，子弹飞行途中再次分裂' },
-    { id: 'bounce', name: '屏幕折射', icon: '折', desc: '子弹斜向射出，在屏幕边缘反弹 2 次' },
+    { id: 'bounce', name: '弹射弹幕', icon: '弹', desc: '子弹斜向射出，在屏幕边缘反弹 2 次' },
   ],
   laser: [
     { id: 'giga', name: '无限粗光炮', icon: '粗', desc: '光束暴涨到极粗，贯穿整列敌人，越往后伤害越低' },
@@ -5319,7 +5319,7 @@ function updateBullets(dt) {
     b.x += b.vx * dt * spd; b.y += b.vy * dt * spd;
     if (b.helix && b.cx !== undefined) { b.ht += dt; b.cx += b.vx * dt * spd; b.cy += b.vy * dt * spd; const o = b.helix * Math.sin(b.ht * 9) * 46; b.x = b.cx - b.hy * o; b.y = b.cy + b.hx * o; }
     else if (b.helix) { b.ht += dt; b.x = b.x0 + b.helix * Math.sin(b.ht * 9) * 46; }
-    // 屏幕折射：边缘反弹
+    // 弹射弹幕：边缘反弹
     if (b.bounce > 0) {
       if (b.x < 4 || b.x > W - 4) { b.vx = -b.vx; b.x = clamp(b.x, 4, W - 4); b.bounce--; b.hits = null; hitSpark(b.x, b.y, '150,230,255'); }
       else if (b.y < 4) { b.vy = -b.vy; b.y = 4; b.bounce--; b.hits = null; hitSpark(b.x, b.y, '150,230,255'); }
@@ -5723,7 +5723,7 @@ const LIVERY = {
   ap: { name: '穿甲型', ramp: ['#0e0c08', '#3a3020', '#8a7440', '#e8cf88'], emis: '255,200,80', flame: '255,160,40', flame2: '255,220,140' },
   he: { name: '爆裂型', ramp: ['#140604', '#4a1408', '#a83a18', '#f08a50'], emis: '255,110,40', flame: '255,80,20', flame2: '255,170,80', core: '60,235,255' },
   fan: { name: '辉光型', ramp: ['#06101a', '#1c3a5a', '#6aa8d8', '#e8f6ff'], emis: '150,240,255', flame: '60,170,255', flame2: '170,240,255' },
-  bounce: { name: '折光型', ramp: ['#041210', '#103a34', '#3aa898', '#b8fff0'], emis: '80,255,210', flame: '30,220,180', flame2: '150,255,230' },
+  bounce: { name: '弹射型', ramp: ['#041210', '#103a34', '#3aa898', '#b8fff0'], emis: '80,255,210', flame: '30,220,180', flame2: '150,255,230' },
   giga: { name: '圣光型', ramp: ['#141008', '#5a4a20', '#d8c070', '#fffbe8'], emis: '255,255,230', flame: '255,210,90', flame2: '255,245,200' },
   whip: { name: '荆棘型', ramp: ['#120410', '#4a1040', '#b03a90', '#ffb0e8'], emis: '255,90,220', flame: '230,60,200', flame2: '255,160,240', core: '60,255,200' },
   prism: { name: '棱镜型', ramp: ['#0a0814', '#2a2050', '#7a6ad0', '#e8e0ff'], emis: '180,140,255', flame: '140,100,255', flame2: '210,190,255' },
