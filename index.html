@@ -4702,18 +4702,36 @@ const ULT_FX = {
     f.shift = (dx, dy) => { for (const n of f.ns) { n.x += dx; n.y += dy; for (let i = 0; i < n.tr.length; i += 2) { n.tr[i] += dx; n.tr[i + 1] += dy; } } };
     return f;
   },
-  // 赤焰 · 炼狱风暴：环从机体扩散到全屏，随后柱子在敌人脚下接连喷发。
-  // 装原配主武器熔火喷流时是火环 + 火柱并点燃敌人（原版）；装别的主武器时换成不带火的能量环 + 能量柱，环的伤害 .4 → .5 补回点燃。颜色都跟战机
+  // 赤焰 · 炼狱风暴：环从机体扩散到全屏。
+  // 装原配主武器熔火喷流时：火环 + 火柱接连喷发并点燃敌人（原版）。
+  // 装别的主武器时（2026-11-23 改）：能量环给碰到的敌人打上发光标记，随后标记一个接一个炸开（连环爆破，波及旁边的敌人）——原来是能量光柱，和苍雷的天降光柱太像。颜色都跟战机
   crimson(P, d, c) {
     const fire = P.weapon === 'flame';
-    const f = { t: 0, dur: 2, R: 0, hit: new Set(), pil: [], pt: 0 }, maxR = Math.hypot(W, H) * .75;
+    const f = { t: 0, dur: fire ? 2 : 2.3, R: 0, hit: new Set(), pil: [], pt: 0, marks: [], bi: 0, bt: 0, booms: 0 }, maxR = Math.hypot(W, H) * .75;
     f.upd = dt => {
       const k = Math.min(1, f.t / .5), cx = P.x, cy = P.y + HIT_OY; f.R = maxR * (1 - (1 - k) ** 2);
       for (const t of ultTargets(40)) if (!f.hit.has(t.ref) && Math.hypot(t.x - cx, t.y - cy) < f.R) {
-        f.hit.add(t.ref); ultHit(t, d * (fire ? .4 : .5), c);
+        f.hit.add(t.ref); ultHit(t, d * (fire ? .4 : .3), c);
+        if (!fire) { t.lx = t.x; t.ly = t.y; f.marks.push(t); }   // 打上标记，按被环扫到的先后顺序炸
         if (fire && t.kind === 'e') { const e = t.ref; e.burn = Math.max(e.burn || 0, 2); e.burnLv = Math.max(e.burnLv || 0, Math.min(5, P.lv)); e.burnK = P.s.dmgMul; e.burnC = c; }   // 点燃 2 秒，燃烧伤害和熔火喷流一样算
       }
-      if (f.t > .42 && f.t < 1.4 && (f.pt -= dt) <= 0) {
+      if (!fire && f.t > .5 && (f.bt -= dt) <= 0) {   // 连环爆破：一个接一个炸，敌人越多间隔越短（整串约 1.2 秒内炸完）
+        const n = f.marks.length, empty = !n && f.booms < 8;
+        if (f.bi < n || empty) {
+          f.bt = n ? clamp(1.2 / n, .035, .09) : .1;
+          let x, y, t = null;
+          if (empty) { const h = hitPt(), a = rnd(0, TAU), r = rnd(90, 260); x = h.x + Math.cos(a) * r; y = h.y + Math.sin(a) * r; }   // 没有敌人：在机体周围炸几下
+          else { t = f.marks[f.bi++]; const q = tAlive(t) ? tPos(t) : { x: t.lx, y: t.ly }; x = q.x; y = q.y; }
+          f.booms++;
+          fxPart('boom', x, y, 130, .45, { c, g0: .35, g1: 1.15 }); fxPart('nova', x, y, 170, .4, { c: rgbMix(c, '255,255,255', .3), g0: .2, g1: 1 });
+          addPart({ t: 'glow', x, y, vx: 0, vy: 0, life: .2, max: .2, size: 90, c: rgbMix(c, '255,255,255', .6) });
+          for (let i = 0; i < 6; i++) { const a = rnd(0, TAU), v = rnd(120, 300); addPart({ t: 'spark', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: .4, max: .4, c }); }
+          if (t && tAlive(t)) ultHit(t, d * .35, c);
+          for (const o of ultTargets(10)) if ((!t || o.ref !== t.ref) && Math.hypot(o.x - x, o.y - y) < 75 + (o.r || 0)) ultHit(o, d * .12, c);   // 波及旁边
+          shake = Math.max(shake, 6); if (f.booms % 2) noise(.22, .12, 650);
+        }
+      }
+      if (fire && f.t > .42 && f.t < 1.4 && (f.pt -= dt) <= 0) {
         f.pt = .055; const tg = ultTargets(10), t = tg.length ? tg[Math.random() * tg.length | 0] : null;
         const x = t ? t.x + rnd(-10, 10) : rnd(30, W - 30), y = t ? t.y + rnd(-10, 10) : rnd(60, H - 100);
         f.pil.push({ x, y, t: 0, s: rnd(.85, 1.2) }); fxPart(fire ? 'pyre' : 'nova', x, y, 110, .4, { c, g0: .3, g1: 1 });
@@ -4738,6 +4756,14 @@ const ULT_FX = {
         if (fl) for (let i = 0; i < 28; i++) { const an = i / 28 * TAU + f.t * .8, s = 74 * (.8 + .4 * Math.sin(i * 3.1 + f.t * 9)); ctx.globalAlpha = .55 * a; ctx.save(); ctx.translate(cx + Math.cos(an) * f.R, cy + Math.sin(an) * f.R); ctx.rotate(an + Math.PI / 2); ctx.drawImage(fl, -s / 2, -s / 2, s, s); ctx.restore(); }
         ctx.globalAlpha = 1;
       }
+      if (!fire) {   // 还没炸的标记：敌人身上一团跳动的光 + 旋转的星芒
+        const fm = fxGet('flare', c);
+        for (let i = f.bi; i < f.marks.length; i++) {
+          const t = f.marks[i]; if (!tAlive(t)) continue; const q = tPos(t), pu = .7 + .3 * Math.sin(time * 14 + i);
+          drawGlow(q.x, q.y, (t.r || 20) * 1.6 + 16, c, .55 * pu);
+          if (fm) { const sz = (t.r || 20) * 1.4 + 24; ctx.globalAlpha = .8 * pu; ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(time * 3 + i); ctx.drawImage(fm, -sz / 2, -sz / 2, sz, sz); ctx.restore(); ctx.globalAlpha = 1; }
+        }
+      }
       const bm = fxGet('beam', c), core = fxGet('beam', rgbMix(c, '255,255,255', .7)), pim = fire ? fxGet('ufirepillar', c) : null, fl = fire && !pim ? fxGet('flame', c) : null;
       for (const q of f.pil) {
         const k = q.t / .6, h = 170 * q.s * Math.min(1, q.t / .12), al = k < .7 ? 1 : (1 - k) / .3;
@@ -4749,7 +4775,7 @@ const ULT_FX = {
       }
     };
     f.over = () => { const a = Math.max(0, .3 - f.t * .6); if (a > 0) { ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(${c},${a})`; ctx.fillRect(0, 0, W, H); } };
-    f.shift = (dx, dy) => { for (const q of f.pil) { q.x += dx; q.y += dy; } };
+    f.shift = (dx, dy) => { for (const q of f.pil) { q.x += dx; q.y += dy; } for (const m of f.marks) { m.lx += dx; m.ly += dy; } };
     return f;
   },
   // 暗影 · 次元斩：两刀交叉劈开整个屏幕，空间裂开一道虚空缝隙，所有敌人受到重创并被向两侧推开
