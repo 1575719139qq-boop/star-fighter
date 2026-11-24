@@ -3220,7 +3220,7 @@ function rollChoices(minRar) {
     && (SURV || !u.surv));
   if (upKinds(P) >= UP_KINDS) for (let i = pool.length - 1; i >= 0; i--) { const u = pool[i]; if (!u.noStack && u.id !== 'heal' && u.id !== 'wing' && !(P.ups[u.id] > 0)) pool.splice(i, 1); }
   // 生存模式里攻速 / 移速 / 吸附卡更容易出现（"高速装填"和"引力磁场"由它们取代）
-  const half = u => synOf(u.id).some(y => !P.syn[y.id] && upHave(P, y.a === u.id ? y.b : y.a) > 0);   // 组合技已经有一半：另一半更容易出现
+  const half = u => synOf(u.id).some(y => !P.syn[y.id] && synCan(P, y) && upHave(P, y.a === u.id ? y.b : y.a) > 0);   // 组合技已经有一半：另一半更容易出现
   // 「僚机支援」顶替原来 8 张副武器卡的位置，出现得更勤（WING_CARD_W 倍）
   const wt = u => RAR[u.rar].w * (u.id === 'aspd' || u.id === 'mspd' || u.id === 'pull' ? SURV_ASPD_WEIGHT : 1) * (half(u) ? 1.7 : 1) * (u.id === 'wing' ? WING_CARD_W : 1);
   const out = [];
@@ -3346,6 +3346,17 @@ const SYNERGY = [
 const upMaxLv = id => id === 'wing' ? 5 : UP_BY_ID[id].max;
 const upHave = (P, id) => Math.min(upMaxLv(id), id === 'wing' ? P.s.wingmen : P.ups[id] || 0);
 const synOf = id => SYNERGY.filter(y => y.a === id || y.b === id);
+// 这张卡还升得满吗（2026-11-24，组合技提示用）：已经满了算能；否则要这套搭配现在还刷得出它，条件和 rollChoices 的卡池一致——
+// 卡自己的 cond（有些卡只给特定主武器 / 僚机，比如「贯穿弹头」）、强化种类满了不再出新种类、剩下还能拿的次数够不够。
+// synCan：组合技的两张卡都还升得满。凑不齐的组合技不在卡片上提示，也不给另一半加权（原来磁轨炮等搭配会一直提示到不了的「贯穿风暴」）
+function upCanMax(P, id) {
+  const need = upMaxLv(id) - upHave(P, id); if (need <= 0) return true;
+  const u = UP_BY_ID[id], got = P.ups[id] || 0;
+  if (u.max - got < need || (u.cond && !u.cond(P)) || (u.surv && !SURV)) return false;
+  if (upKinds(P) >= UP_KINDS && !u.noStack && id !== 'heal' && id !== 'wing' && !(got > 0)) return false;
+  return true;
+}
+const synCan = (P, y) => upCanMax(P, y.a) && upCanMax(P, y.b);
 function synCheck() {
   const P = player;
   for (const y of SYNERGY) {
@@ -9487,7 +9498,7 @@ function drawChoice() {
     ctx.textAlign = 'center';
     // 组合技提示（卡片上沿的小金标）：和哪张卡能合成什么、对方现在几级
     for (const sy of synOf(u.id)) {
-      if (player.syn[sy.id]) continue;
+      if (player.syn[sy.id] || !synCan(player, sy)) continue;   // 已经合成的、这套搭配凑不齐的都不提示
       const o = sy.a === u.id ? sy.b : sy.a, tx = `◆ ${sy.name}：${UP_BY_ID[o].name} ${upHave(player, o)}/${upMaxLv(o)}`;
       ctx.font = `bold 11px ${FONT}`; const tw = ctx.measureText(tx).width + 14;
       ctx.fillStyle = 'rgba(46,32,0,.96)'; roundRect(x + w - tw - 44, y - 9, tw, 18, 9); ctx.fill(); ctx.strokeStyle = '#ffd780'; ctx.lineWidth = 1.2; ctx.stroke();
