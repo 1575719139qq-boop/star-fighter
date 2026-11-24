@@ -1701,6 +1701,25 @@ function planetSolidAt(x, y) {
 }
 function dropOre(x, y, v) { pickups.push({ x, y, k: 'O', v, t: 0, vy: 0 }); }
 // 炸出坑洞：贴图挖掉一个圆，坑边一圈压暗；遮罩同步清空；挖到核心旁边核心就露出来
+// 2026-11-24（用户：战机也能飞越星球，立体效果更好）：行星是所有飞行物脚下的地面——战机、敌机、双方子弹都从上空飞过，不再被岩层挡住，子弹也不再炸坑。
+// 只有彗星还是飘在同一层的实心物体（照旧能撞、能打碎）；陨石照旧砸在地表炸出坑。rockAt：这个位置有没有挡路的实心岩体（只算彗星）
+const rockAt = (x, y) => { const p = planetSolidAt(x, y); return p && p.comet ? p : null; };
+// 挖矿改成直接打矿脉：子弹飞过发光的矿脉就掉 2–3 颗矿石（和原来炸到矿脉时一样），打空为止；同一颗穿透弹对同一条矿脉只算一次
+function bulletHitVein(b) {
+  for (const p of planets) {
+    if (p.comet || p.gone) continue;
+    for (const v of p.veins) {
+      if (v.left <= 0 || b.vein === v) continue; const x = p.x + v.x, y = p.y + v.y;
+      if ((b.x - x) ** 2 + (b.y - y) ** 2 > (v.r + 6) ** 2) continue;
+      const n = Math.min(v.left, Math.random() < .5 ? 3 : 2); v.left -= n; b.vein = v;
+      for (let k = 0; k < n; k++) dropOre(b.x + rnd(-8, 8), b.y + rnd(-8, 8), 1);
+      hitSpark(b.x, b.y, '255,210,90'); if (v.left <= 0) floatText(x, y - 20, '矿脉采空', 13, '#ffd27a', 1.2);
+      if (!b.ap && !b.wave) b.dead = true;
+      return true;
+    }
+  }
+  return false;
+}
 function planetCarve(p, x, y, r, dig) {
   if (dig) {
     for (const v of p.veins) {
@@ -1845,22 +1864,24 @@ function planetStep(dt) {
     if (b.dead) continue;
     if (tp && bulletHitFoe(tp, b)) continue;
     if (b.tur) continue;
-    const p = planetSolidAt(b.x, b.y); if (!p) continue;
+    if (bulletHitVein(b)) continue;
+    const p = rockAt(b.x, b.y); if (!p) continue;   // 只有彗星还会被子弹炸开
     planetCarve(p, b.x, b.y, b.rocket ? 40 : b.he ? 16 : b.mis ? 13 : b.wave ? 12 : b.ap ? 11 : b.pellet || b.wing ? 6 : 8, true);
     if (!b.ap && !b.wave) b.dead = true;
   }
-  for (const b of eBullets) { if (b.dead) continue; const p = planetSolidAt(b.x, b.y); if (p) { b.dead = true; planetCarve(p, b.x, b.y, 4); } }
+  for (const b of eBullets) { if (b.dead) continue; const p = rockAt(b.x, b.y); if (p) { b.dead = true; planetCarve(p, b.x, b.y, 4); } }
   for (const e of enemies) {
     if (e.hp <= 0) continue; const p = planetSolidAt(e.x, e.y); if (!p) continue;
-    if (PLANET_ROCKS.has(e.type) && e.noG) { planetCarve(p, e.x, e.y, 26 + e.r); explosion(e.x, e.y, 30); e.hp = 0; continue; }
+    if (PLANET_ROCKS.has(e.type) && e.noG) { planetCarve(p, e.x, e.y, 26 + e.r); explosion(e.x, e.y, 30); e.hp = 0; continue; }   // 陨石照旧砸在地表
+    if (!p.comet) continue;   // 行星：敌机从上空飞过
     const dx = e.x - p.x, dy = e.y - p.y, d = Math.hypot(dx, dy) || 1, nx = dx / d, ny = dy / d;
-    for (let k = 1; k <= 30; k++) if (!planetSolidAt(e.x + nx * k * 5, e.y + ny * k * 5)) { e.x += nx * k * 5; e.y += ny * k * 5; e.x0 = e.x; break; }
+    for (let k = 1; k <= 30; k++) if (!rockAt(e.x + nx * k * 5, e.y + ny * k * 5)) { e.x += nx * k * 5; e.y += ny * k * 5; e.x0 = e.x; break; }
   }
   if (!P.dead) {
-    const hit = (x, y) => { if (planetSolidAt(x, y)) return true; for (let i = 0; i < 8; i++) { const a = i / 8 * TAU; if (planetSolidAt(x + Math.cos(a) * 15, y + Math.sin(a) * 15)) return true; } return false; };
+    const hit = (x, y) => { if (rockAt(x, y)) return true; for (let i = 0; i < 8; i++) { const a = i / 8 * TAU; if (rockAt(x + Math.cos(a) * 15, y + Math.sin(a) * 15)) return true; } return false; };   // 战机只会被彗星挡住，行星可以直接飞越
     const hx = P.x, hy = P.y + HIT_OY;
     if (hit(hx, hy)) {
-      let p = planets[0], bd = 1e18; for (const q of planets) { const d = (q.x - hx) ** 2 + (q.y - hy) ** 2; if (d < bd) { bd = d; p = q; } }
+      let p = planets[0], bd = 1e18; for (const q of planets) { if (!q.comet) continue; const d = (q.x - hx) ** 2 + (q.y - hy) ** 2; if (d < bd) { bd = d; p = q; } }
       const dx = hx - p.x, dy = hy - p.y, d = Math.hypot(dx, dy) || 1, nx = dx / d, ny = dy / d;
       for (let k = 1; k <= 40; k++) if (!hit(hx + nx * k * 3, hy + ny * k * 3)) { worldShift(-nx * k * 3, -ny * k * 3); break; }
     }
