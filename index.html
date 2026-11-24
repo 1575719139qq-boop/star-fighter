@@ -1711,7 +1711,7 @@ function bulletHitVein(b) {
     for (const v of p.veins) {
       if (v.left <= 0 || b.vein === v) continue; const x = p.x + v.x, y = p.y + v.y;
       if ((b.x - x) ** 2 + (b.y - y) ** 2 > (v.r + 6) ** 2) continue;
-      const n = Math.min(v.left, Math.random() < .5 ? 3 : 2); v.left -= n; b.vein = v;
+      const n = Math.min(v.left, b.ore ? Math.round(b.ore) : Math.random() < .5 ? 3 : 2); v.left -= n; b.vein = v;
       for (let k = 0; k < n; k++) dropOre(b.x + rnd(-8, 8), b.y + rnd(-8, 8), 1);
       hitSpark(b.x, b.y, '255,210,90'); if (v.left <= 0) floatText(x, y - 20, '矿脉采空', 13, '#ffd27a', 1.2);
       if (!b.ap && !b.wave) b.dead = true;
@@ -1719,6 +1719,33 @@ function bulletHitVein(b) {
     }
   }
   return false;
+}
+// 不发射子弹的主武器（激光、磁轨、雷霆、熔火）也能采矿（2026-11-24，用户要求）：武器扫到矿脉就记账，开局约 VEIN_RATE 颗 / 秒，攻速越高越快
+// （和 1 级极光等离子打矿脉的速度差不多），不占用武器对敌人的伤害。武器是在「机头朝上」的旋转坐标里结算的，
+// 所以先记在 v.pend 里，回到正常坐标后由 veinFlush 统一掉矿石（同据点的 pend）
+const VEIN_RATE = 5.5;
+const mineK = rate => rate / (SURV ? SURV_RATE0 : 1);   // 攻速相对开局的倍数（生存模式开局的 rate 只有 SURV_RATE0）
+function veinsInFrame() {
+  const out = []; if (!PLANET) return out;
+  for (const p of planets) { if (p.comet || p.gone) continue; for (const v of p.veins) if (v.left > 0) { const q = foeXY({ p, dx: v.x, dy: v.y }); out.push({ v, x: q.x, y: q.y }); } }
+  return out;
+}
+function veinFlush(p) {
+  for (const v of p.veins) {
+    if (!v.pend) continue; v.acc = (v.acc || 0) + v.pend; v.pend = 0;
+    const n = Math.min(v.left, Math.floor(v.acc)); if (n <= 0) continue;
+    v.acc -= n; v.left -= n; const x = p.x + v.x, y = p.y + v.y;
+    for (let k = 0; k < n; k++) dropOre(x + rnd(-v.r, v.r) * .6, y + rnd(-v.r, v.r) * .6, 1);
+    hitSpark(x + rnd(-8, 8), y + rnd(-8, 8), '255,210,90'); if (v.left <= 0) floatText(x, y - 20, '矿脉采空', 13, '#ffd27a', 1.2);
+  }
+}
+// 光束（P.beams 里的折线）扫到的矿脉
+function beamMine(k) {
+  const P = player; if (!P.beams.length) return;
+  for (const q of veinsInFrame()) for (const bm of P.beams) {
+    let hit = false; for (let i = 1; i < bm.pts.length && !hit; i++) hit = segDist(q.x, q.y, bm.pts[i - 1][0], bm.pts[i - 1][1], bm.pts[i][0], bm.pts[i][1]) < q.v.r + (bm.w || 10) / 2;
+    if (hit) { q.v.pend = (q.v.pend || 0) + VEIN_RATE * k; break; }
+  }
 }
 function planetCarve(p, x, y, r, dig) {
   if (dig) {
@@ -1896,7 +1923,7 @@ function planetStep(dt) {
     foeStep(tp, dt);
   }
   if (tp) {
-    foeFlush(tp); coreDigStep(tp);
+    foeFlush(tp); veinFlush(tp); coreDigStep(tp);
     // 光束打向还埋着的核心时，只画到岩层表面（看起来是在往里烧）
     const c = tp.core;
     if (c && !c.open && c.hp > 0 && P.beams) for (const bm of P.beams) {
@@ -3985,7 +4012,7 @@ function fireMain(dt, eff, rate) {
   const P = player, S = P.s, br = branchOf();
   P.beams = [];
   P.mainTarget = nearestTargets(P.x, P.y - 30, 1, 700)[0] || null;
-  if (P.weapon === 'laser') { fireLaser(dt, eff, rate, br); laserCut(); return; }
+  if (P.weapon === 'laser') { fireLaser(dt, eff, rate, br); laserCut(); beamMine(dt * mineK(rate)); return; }
   if (P.weapon === 'flame') { fireFlame(dt, eff, rate, br); return; }
   if (P.weapon === 'rail') { fireRail(dt, eff, rate, br); return; }
   P.fireT -= dt;
@@ -4123,12 +4150,12 @@ function fireWave(eff, rate, br) {
   P.fireT += (shock ? .42 : .3) / rate;
   // 回旋镰刃：生存模式里玩家在屏幕中间、上方空间短，飞得慢一点、折返得快一点，不然还没回头就飞出屏幕了
   const o = { dmg: (8 + eff * 3) * S.dmgMul * (shock ? 1.55 : helix ? .7 : 1), grow: (16 + eff * 18) * (shock ? 1.6 : 1), shock, boomer, dec: SURV ? 1100 : 900,
-    c: LOOK.emis };
+    c: LOOK.emis, ore: VEIN_RATE * (shock ? .42 : .3) / (SURV ? SURV_RATE0 : 1) / (helix ? 2 : 1) };   // ore：这一刀扫过矿脉掉几颗矿石（出手慢，按出手间隔折算，和其他武器一样快）
   const rift = shock && time - (P.riftAt ?? -9) >= RIFT_CD; if (rift) P.riftAt = time;   // 这一刀会切开空间（只有裂隙斩）
   if (helix) for (const s of [-1, 1]) pBullets.push(mkWave(P.x, P.y - 40, 0, -560, Object.assign({}, o, { helix: s, x0: P.x, ht: 0, rift: rift && s < 0 })));
   else pBullets.push(mkWave(P.x, P.y - 40, 0, boomer ? (SURV ? -760 : -950) : -620, Object.assign({}, o, { rift })));
   for (let i = 1; i <= S.spread; i++) for (const sd of [-1, 1])
-    pBullets.push(mkWave(P.x + sd * 20, P.y - 30, sd * (140 + i * 60), -560, Object.assign({}, o, { dmg: o.dmg * .6, grow: 30, helix: 0, boomer: false })));
+    pBullets.push(mkWave(P.x + sd * 20, P.y - 30, sd * (140 + i * 60), -560, Object.assign({}, o, { dmg: o.dmg * .6, grow: 30, helix: 0, boomer: false, ore: 0 })));
 }
 function fireThunder(eff, rate, br) {
   const P = player, S = P.s, net = br === 'net', emp = br === 'emp', exec = br === 'exec';
@@ -4145,7 +4172,9 @@ function fireThunder(eff, rate, br) {
   // 打得慢时一道一道劈（带回闪），打得快时连成一条不停重画的电弧
   const nx = P.x, ny = P.y + shipNoseY(), life = clamp(iv * .9, .1, .2);
   thFlashT = time;
-  if (!tg.length) boltFx(nx, ny, nx + rnd(-34, 34), ny - rnd(60, 110), col, { nose: true, life: .1, w: .6, forks: 2 });   // 没目标：机头前一小段空放电
+  let vq = null, vd = 220; for (const q of veinsInFrame()) { const dd = Math.hypot(q.x - nx, q.y - ny) - q.v.r; if (dd < vd) { vd = dd; vq = q; } }
+  if (vq) { boltFx(nx, ny, vq.x + rnd(-6, 6), vq.y + rnd(-6, 6), col, { nose: true, life, w: .7, forks: 1 }); vq.v.pend = (vq.v.pend || 0) + VEIN_RATE * mineK(rate) * iv; }   // 采矿：离机头 220 以内最近的矿脉，额外劈一道
+  else if (!tg.length) boltFx(nx, ny, nx + rnd(-34, 34), ny - rnd(60, 110), col, { nose: true, life: .1, w: .6, forks: 2 });   // 没目标：机头前一小段空放电
   let killed = false, trunk = null;
   for (const t of tg) {
     const jx = rnd(-6, 6), jy = rnd(-6, 6);
@@ -4182,14 +4211,17 @@ function fireRail(dt, eff, rate, br) {
   if (P.rail && (P.rail.t += dt) > RAIL_FX) P.rail = null;
   const need = RAIL_T * (heavy ? 1.6 : rapid ? .5 : 1) * (SURV ? SURV_RATE0 : 1) / Math.max(.02, rate);   // 生存模式按开局攻速算：开局约 1 秒一发，攻速越高蓄得越快
   P.railC = Math.min(need, (P.railC || 0) + dt); P.railK = P.railC / need;
-  if (P.railC < need || !targets().length) return;
+  const nx = P.x, ny = P.y + shipNoseY();
+  const lane = veinsInFrame().filter(q => Math.abs(q.x - nx) < q.v.r + 40 && q.y < ny + 10 && q.y > ny - RAIL_LEN);   // 弹道上的矿脉：没有敌人时也可以开火采矿
+  if (P.railC < need || (!targets().length && !lane.length)) return;
   P.railC = 0; P.railK = 0; P.railN = (P.railN || 0) + 1;
-  const over = P.railN % 4 === 0, nx = P.x, ny = P.y + shipNoseY();
+  const over = P.railN % 4 === 0;
   const w = (10 + eff * 3) * (heavy ? 1.6 : 1) * (over ? 1.8 : 1), d = (55 + eff * 28) * S.dmgMul * (heavy ? 2.2 : rapid ? .65 : 1) * (over ? 2.5 : 1);
   const lines = twin ? [[-16, .65], [16, .65]] : [[0, 1]];
   for (let i = 1; i <= S.spread; i++) for (const sd of [-1, 1]) lines.push([sd * ((twin ? 16 : 0) + i * 15), .5]);
   const main = twin ? 2 : 1, hit = new Set();   // 主轨道照常打（双轨的两条各打各的），侧轨跳过这一发已经挨过打的目标
   lines.forEach(([o, k], i) => { for (const t of lineTargets([[nx + o, ny], [nx + o, ny - RAIL_LEN]], w * (k < 1 ? .7 : 1)).filter(t => t.y < ny + 10)) { if (i >= main && hit.has(t.ref)) continue; hit.add(t.ref); applyHit(t, d * k, t.x, t.y, LOOK.emis, 1); } });
+  for (const q of lane) if (lines.some(([o]) => Math.abs(q.x - nx - o) < q.v.r + w / 2)) q.v.pend = (q.v.pend || 0) + VEIN_RATE * mineK(rate) * need;   // 每发折合的矿石数，按攻速算下来和其他武器一样快
   P.rail = { x: nx, y0: ny, len: RAIL_LEN, w, offs: lines.map(l => [l[0], l[1]]), t: 0, over, c: LOOK.emis };
   shake = Math.max(shake, over ? 7 : heavy ? 5 : 2.5); P.muzzle = .08;
   noise(over ? .35 : .18, over ? .12 : .07, over ? 1400 : 2600); tone(over ? 140 : 220, over ? .35 : .18, 'sawtooth', .05, -.6);
@@ -7991,6 +8023,7 @@ function fireFlame(dt, eff, rate, br) {
   // LV1 火苗会断续闪烁
   const sputter = lv === 1 ? .55 + .45 * Math.sin(time * 23) * Math.sin(time * 7.3) : 1;
   P.flameFx = { cones, cols, lv, sputter, blue, life: .05 };
+  for (const q of veinsInFrame()) { const dx = q.x - x0, dy = q.y - y0, dd = Math.hypot(dx, dy) || 1; if (dd < range + q.v.r && Math.abs(Math.atan2(dx, -dy)) < half + Math.atan2(q.v.r, dd)) q.v.pend = (q.v.pend || 0) + VEIN_RATE * mineK(rate) * dt; }   // 采矿：主火锥罩住的矿脉
   if (time - (P.poolAt ?? -9) >= POOL_CD) { P.poolAt = time; const d = range * .7; subFx.push({ type: 'pool', x: x0, y: y0 - d, r: 44 + eff * 6, t: 0, life: POOL_LIFE, lv: eff, tick: 0, k: S.dmgMul, c: fc }); }   // 熔岩火池
   for (const [cx, cy, ang, rg, hf, w] of cones) {
     const main = w > .9, n = main ? [1, 2, 3, 5, 7, 9, 11][lv] : 2;
