@@ -1212,7 +1212,6 @@ function startSurvival() {
   const tg0 = smTarget(); survBossBase = tg0 ? tg0.sec : 0; runTier = tg0 && tg0.tier || 0; runHpK = tg0 ? 1 + .3 * (SECTORS[tg0.sec].diff + runTier) : 1;   // 每高一档难度相当于再深一个星区（敌人 +2 级）
   planetBonusApply(player);
   addPlanet(-Math.PI / 2);
-  techApply(player);
   // 两颗彗星：一颗在出发点左侧（开局就能看到彗尾），一颗在行星右侧的轨道圈外
   { const pl = planets[0], hx = player.x, hy = player.y + HIT_OY; addComet(hx - 250, hy - 120, 0); addComet(pl.x + Math.cos(-.2) * (pl.orbit + 120), pl.y + Math.sin(-.2) * (pl.orbit + 120), 1); }
   floatText(W / 2, SURV_Y - 130, runTier ? `生存模式 · 难度 ${runTier + 1}` : '生存模式', 20, '#9fe8ff', 2.2);
@@ -1974,7 +1973,6 @@ function planetStep(dt) {
     tp.inOrbit = Math.hypot(P.x - tp.x, P.y + HIT_OY - tp.y) < tp.orbit;
     if (tp.inOrbit && tp.orbitT0 < 0) {
       tp.orbitT0 = survT; floatText(W / 2, SURV_Y - 150, tp.name, 20, `rgb(${tp.pal.atm})`, 2);
-      if (techHas('b4')) placeBuild(tp, { id: 'turret', up: false });   // 科技「轨道补给」：自带炮塔环
     }
     if (tp.inOrbit) { survSpawnT -= dt * .4; planetEnv(tp, dt); }
     foeStep(tp, dt);
@@ -2789,7 +2787,7 @@ function drawRecords() {
   uiRects.push({ x: 0, y: 0, w: W, h: H, act: 'recclose' });
   const y0 = 170, rows = [
     ['hourglass', '生存最久', fmtTime(survBest)], ['planet', '已占领星球', String(save.planets.length)],
-    ['squad', '星区进度', `${Math.min(SECTORS.length, sectorsDone())}/${SECTORS.length}`], ['wrench', '已研究科技', `${TECH.filter(d => techHas(d.id)).length}/${TECH.length}`],
+    ['squad', '星区进度', `${Math.min(SECTORS.length, sectorsDone())}/${SECTORS.length}`],
     ['turret', '基地总等级', String(save.planets.reduce((s, p) => s + (p.lv || 1), 0))], ['ore', '矿石仓库', String(save.ore || 0)],
   ];
   panel(36, y0, W - 72, 60 + rows.length * 38, .96); uiRects.push({ x: 36, y: y0, w: W - 72, h: 60 + rows.length * 38, act: 'nop' });
@@ -2941,10 +2939,9 @@ function drawStarMap() {
   ctx.textAlign = 'center';
   const lh = save.lastHarvest;
   if (lh && (lh.ore || lh.cr || lh.left)) { ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.7)'; ctx.fillText(`上一局：星球产出 矿石 ${lh.ore} · 星晶 ${lh.cr}，带回矿石 ${lh.left}`, W / 2, 574); }
-  const bw = (W - 36) / 3;
-  uiBtn(12, H - 104, bw, 40, '科技 [T]', 'tech', { tint: 'purple', fill: 'rgba(60,40,110,.9)', stroke: '#c8a8ff' });
-  uiBtn(18 + bw, H - 104, bw, 40, '记录 [R]', 'rec', { tint: 'gold', fill: 'rgba(70,60,20,.9)', stroke: '#ffd780' });
-  uiBtn(24 + bw * 2, H - 104, bw, 40, '返回 [Esc]', 'back', { tint: 'steel' });
+  const bw = (W - 30) / 2;
+  uiBtn(12, H - 104, bw, 40, '记录 [R]', 'rec', { tint: 'gold', fill: 'rgba(70,60,20,.9)', stroke: '#ffd780' });
+  uiBtn(18 + bw, H - 104, bw, 40, '返回 [Esc]', 'back', { tint: 'steel' });
   uiBtn(12, H - 56, W - 24, 42, '出击 · 生存模式 [Enter]', 'surv', { tint: 'green', fill: 'rgba(15,95,75,.9)', stroke: '#8fffd0', fs: 15 });
   if (smRec) drawRecords();
 }
@@ -2955,7 +2952,6 @@ function smAct(a) {
   if (a === 'recclose') { smRec = false; return; }
   if (a === 'back') state = 'title';
   else if (a === 'surv') startSurvival();
-  else if (a === 'tech') { state = 'tech'; techSel = null; }
   else if (a === 'smz-') smZoom(1 / 1.25);
   else if (a === 'smz+') smZoom(1.25);
   else if (a === 'smtier') {
@@ -2997,69 +2993,7 @@ function smUp(p, e) {
   if (smDrag && !smDrag.moved && smPtr.size === 1) smTap(p);
   smPtr.delete(e.pointerId); if (!smPtr.size) smDrag = null;
 }
-// ================= 科技树：用矿石研究永久升级，三条线各 4 级，必须按顺序研究 =================
-const TECH_BR = [{ n: '火力', c: '255,130,90' }, { n: '生存', c: '120,200,255' }, { n: '基地', c: '255,210,110' }];
-const TECH = [
-  { id: 'f1', br: 0, t: 0, name: '强化弹药', gl: 'sword', cost: 40, desc: '伤害 +10%', apply: P => { P.s.dmgMul *= 1.1; } },
-  { id: 'f2', br: 0, t: 1, name: '快速装填', gl: 'gauge', cost: 80, desc: '攻速 +8%', apply: P => { P.s.aspd = (P.s.aspd || 0) + .08; } },
-  { id: 'f3', br: 0, t: 2, name: '预装主炮', gl: 'power', cost: 140, desc: '开局主炮 Lv2', apply: P => { P.lv = P.lastLv = Math.max(P.lv, 2); } },
-  { id: 'f4', br: 0, t: 3, name: '僚机挂架', gl: 'squad', cost: 220, desc: '开局多带 1 架僚机', apply: P => { P.s.wingmen = Math.min(5, P.s.wingmen + 1); } },   // 原来是「副武器挂架」，副武器取消后改成僚机（买过的直接生效）
-  { id: 's1', br: 1, t: 0, name: '复合装甲', gl: 'plate', cost: 40, desc: '护甲上限 +1', apply: P => { P.maxArmor++; P.armor++; } },
-  { id: 's2', br: 1, t: 1, name: '开局护盾', gl: 'bubble', cost: 80, desc: '开局带 1 层护盾', apply: P => { P.s.shieldMax++; P.s.shield++; } },
-  { id: 's3', br: 1, t: 2, name: '磁力核心', gl: 'magnet', cost: 140, desc: '吸附范围扩大', apply: P => { P.s.pull = (P.s.pull || 0) + SURV_PULL; } },
-  { id: 's4', br: 1, t: 3, name: '战术刷新', gl: 'slashes', cost: 220, desc: '升级卡刷新次数 +2', apply: P => { P.rerolls += 2; } },
-  { id: 'b1', br: 2, t: 0, name: '精炼技术', gl: 'ore', cost: 40, desc: '矿石 +25%', apply: () => { oreMul *= 1.25; } },
-  { id: 'b4', br: 2, t: 1, name: '轨道补给', gl: 'turret', cost: 220, desc: '进入轨道时自带炮塔环', apply: () => { } },   // 2026-11-23「矿脉探测」删掉（矿脉开局就显示），这一项提上来
-];
-const techHas = id => !!(save.tech && save.tech[id]);
-const techReady = d => d.t === 0 || techHas(TECH.find(o => o.br === d.br && o.t === d.t - 1).id);
-function techApply(P) { for (const d of TECH) if (techHas(d.id)) d.apply(P); }
-let techSel = null;
-function drawTech() {
-  uiRects = [];
-  ctx.fillStyle = 'rgba(4,6,20,.86)'; ctx.fillRect(0, 0, W, H);
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.font = `900 24px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('科 技', W / 2, 28);
-  ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; drawGlyph('ore', 22, 28, 15, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(String(save.ore || 0), 34, 29); ctx.textAlign = 'center';
-  const colX = b => W * (b * 2 + 1) / 6, rowY = t => 128 + t * 100;
-  TECH_BR.forEach((B, b) => { ctx.font = `bold 14px ${FONT}`; ctx.fillStyle = `rgb(${B.c})`; ctx.fillText(B.n, colX(b), 72); });
-  for (const d of TECH) if (d.t > 0) { const on = techHas(d.id), x = colX(d.br); ctx.strokeStyle = on ? `rgba(${TECH_BR[d.br].c},.8)` : 'rgba(120,130,150,.3)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x, rowY(d.t - 1) + 30); ctx.lineTo(x, rowY(d.t) - 30); ctx.stroke(); }
-  for (const d of TECH) {
-    const x = colX(d.br), y = rowY(d.t), on = techHas(d.id), ready = techReady(d), c = TECH_BR[d.br].c, sel = techSel === d.id;
-    uiRects.push({ x: x - 34, y: y - 34, w: 68, h: 80, act: 'tn:' + d.id });
-    const pk = pressBegin('tn:' + d.id, x - 34, y - 34, 68, 80);
-    if (on) { ctx.globalCompositeOperation = 'lighter'; drawGlow(x, y, 70, c, .4); ctx.globalCompositeOperation = 'source-over'; }
-    ctx.fillStyle = on ? `rgba(${c},.25)` : 'rgba(12,20,36,.95)'; ctx.beginPath(); ctx.arc(x, y, 28, 0, TAU); ctx.fill();
-    ctx.strokeStyle = on ? `rgb(${c})` : ready ? `rgba(${c},.8)` : 'rgba(120,130,150,.35)'; ctx.lineWidth = sel ? 3 : 1.8; if (!on && ready) ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
-    drawGlyph(d.gl, x, y, 26, on ? '#fff' : ready ? `rgb(${c})` : 'rgb(90,100,120)');
-    ctx.font = `bold 11px ${FONT}`; ctx.fillStyle = on ? '#fff' : ready ? '#cfe2f0' : 'rgba(140,150,170,.6)'; ctx.fillText(d.name, x, y + 41);
-    if (pk) { ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(150,215,255,${.25 * pk.k})`; ctx.beginPath(); ctx.arc(x, y, 28, 0, TAU); ctx.fill(); ctx.globalCompositeOperation = 'source-over'; }
-    pressEnd(pk);
-  }
-  panel(12, 520, W - 24, 92, .9);
-  const d = TECH.find(o => o.id === techSel);
-  if (d) {
-    const on = techHas(d.id), ready = techReady(d), can = !on && ready && (save.ore || 0) >= d.cost, c = TECH_BR[d.br].c;
-    drawGlyph(d.gl, 46, 566, 28, `rgb(${c})`);
-    ctx.textAlign = 'left'; ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(d.name, 76, 552);
-    ctx.font = `13px ${FONT}`; ctx.fillStyle = `rgb(${c})`; ctx.fillText(d.desc, 76, 578);
-    ctx.textAlign = 'center';
-    if (on) { ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#9fe8ff'; ctx.fillText('已研究', W - 80, 566); }
-    else if (!ready) { ctx.font = `12px ${FONT}`; ctx.fillStyle = 'rgba(190,200,215,.7)'; ctx.fillText('先研究上一级', W - 80, 566); }
-    else { uiBtn(W - 138, 544, 112, 44, `研究 ${d.cost}`, 'tbuy', { off: !can, dx: 8, fill: can ? 'rgba(30,110,170,.9)' : 'rgba(40,50,60,.8)', stroke: can ? '#9fe8ff' : 'rgba(150,160,170,.5)' }); drawGlyph('ore', W - 118, 567, 12, can ? '#ffd27a' : '#998866'); }
-  } else { ctx.font = `13px ${FONT}`; ctx.fillStyle = 'rgba(190,220,240,.6)'; ctx.fillText('点击科技查看', W / 2, 566); }
-  uiBtn(12, H - 56, W - 24, 42, '返回星图 [Esc]', 'tback', { tint: 'steel' });
-}
-function techAct(a) {
-  if (!a) return;
-  if (a === 'tback') { state = 'starmap'; return; }
-  if (a.startsWith('tn:')) { techSel = a.slice(3); sfxTap(); return; }
-  if (a === 'tbuy') {
-    const d = TECH.find(o => o.id === techSel); if (!d || techHas(d.id) || !techReady(d)) return;
-    if ((save.ore || 0) < d.cost) { tone(150, .12, 'square', .04); return; }
-    save.ore -= d.cost; save.tech = save.tech || {}; save.tech[d.id] = true; persist(); sfxPick();
-  }
-}
+// （科技树 2026-11-26 整个删掉，用户：「单调无趣」。已研究的在读档时退还矿石，见存档整理处）
 // 敌人等级：每级血量 +17%，经验约按血量成长
 const lvHpK = lv => 1 + (lv - 1) * .17;
 const survBaseLv = () => 1 + Math.floor(survT / 30) + 2 * Math.round((runHpK - 1) / .3) + (survDoom ? DOOM_LV + Math.floor(survDoom.t / DOOM_LV_T) : 0);
@@ -3595,7 +3529,7 @@ function togglePause() {
 
 // ================= 输入 =================
 const keys = {};
-const uiSig = () => [state, sysOpen, sysMusic, hangarPick, gachaPool, !!gachaRes, smRec, techSel, codexPage, curSkin, muted, craftTab, craftSel].join('|');
+const uiSig = () => [state, sysOpen, sysMusic, hangarPick, gachaPool, !!gachaRes, smRec, codexPage, curSkin, muted, craftTab, craftSel].join('|');
 addEventListener('keydown', e => { const g0 = uiSig(), n0 = sndN; onKey(e); if (sndN === n0 && uiSig() !== g0) sfxTap(); });
 function onKey(e) {
   keys[e.code] = true; initAudio(); touchUI = false;
@@ -3612,10 +3546,9 @@ function onKey(e) {
   if ((state === 'title' || state === 'over') && e.code === 'KeyH') { state = 'hangar'; hangarPick = null; return; }
   if ((state === 'title' || state === 'over') && e.code === 'KeyJ') { state = 'gacha'; return; }
   if (state === 'over' && e.code === 'Escape') { state = 'title'; return; }
-  if (state === 'tech') { if (e.code === 'Escape' || e.code === 'KeyT') state = 'starmap'; return; }
   if (state === 'starmap' && smRec) { if (e.code === 'Escape' || e.code === 'KeyR') smRec = false; return; }
   if (state === 'starmap' && e.code === 'KeyR') { smRec = true; return; }
-  if (state === 'starmap') { if (e.code === 'Escape' || e.code === 'KeyS') state = 'title'; else if (e.code === 'Enter') startSurvival(); else if (e.code === 'KeyT') { state = 'tech'; techSel = null; } else if (e.code === 'Equal') smZoom(1.25); else if (e.code === 'Minus') smZoom(1 / 1.25); return; }
+  if (state === 'starmap') { if (e.code === 'Escape' || e.code === 'KeyS') state = 'title'; else if (e.code === 'Enter') startSurvival(); else if (e.code === 'Equal') smZoom(1.25); else if (e.code === 'Minus') smZoom(1 / 1.25); return; }
   if (state === 'title' && e.code === 'KeyS') { smOpen(); return; }
   if (state === 'build') { const k = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8'].indexOf(e.code), ids = buildIds(); if (k >= 0 && ids[k]) buildAct((buildCtx.pad.b === 'mod' ? 'm:' : 'b:') + ids[k]); if (e.code === 'Escape' || e.code === 'KeyB') closeBuild(); return; }
   if (state === 'paused' && e.code === 'KeyQ') { quitRun(); return; }
@@ -3656,7 +3589,6 @@ cv.addEventListener('pointerdown', e => {
   if (state === 'codex') { codexClick(p); return; }
   if (state === 'hangar') { uiTap(p, hangarAct); return; }
   if (state === 'starmap') { smDown(p, e); return; }
-  if (state === 'tech') { uiTap(p, techAct); return; }
   if (state === 'gacha') { uiTap(p, gachaAct); return; }
   if (state === 'title' || state === 'over') { if (uiTap(p, titleAct)) return; }
   if (state === 'title' || state === 'over') { if (state === 'title') sysOpen = false; else if (phaseT > (capRes ? 2.3 : 0.8)) restartRun(); return; }   // 主菜单点空白处不再直接开始
@@ -6130,8 +6062,8 @@ function persist() { if (demoSilent) return; try { localStorage.setItem(SAVE_KEY
 curSkin = save.fighters[save.load.fighter] ? save.load.fighter : 'silver';
 if (!Array.isArray(save.planets)) save.planets = [];
 if (typeof save.ore !== 'number') save.ore = 0;
-if (!save.tech) save.tech = {};   // 已研究的科技
-if (save.tech.b3) { delete save.tech.b3; save.ore = (save.ore || 0) + 140; persist(); }   // 「矿脉探测」删掉：退还研究花的 140 矿石
+// 科技树 2026-11-26 整个删掉：已研究的按当时的价格退还矿石（矿石还能在星图里升级基地），加成不再生效
+if (save.tech) { const COST = { f1: 40, f2: 80, f3: 140, f4: 220, s1: 40, s2: 80, s3: 140, s4: 220, b1: 40, b3: 140, b4: 220 }; let back = 0; for (const k in save.tech) if (save.tech[k]) back += COST[k] || 0; delete save.tech; if (back) save.ore = (save.ore || 0) + back; persist(); }
 if (!Array.isArray(save.mat)) save.mat = [0, 0, 0];   // 合成材料：合金 / 能量核 / 星核
 if (!save.bp) save.bp = {};   // 抽到但还没合成的设计图：{ 'f:战机id' 或装备 key: 张数 }
 // 2026-11-22 副武器取消（功能并进僚机）：旧存档里的副武器直接删掉，不返还
@@ -9512,7 +9444,6 @@ function render() {
   if (state === 'codex') { ctx.restore(); uiCol(drawCodex, 'rgba(2,8,18,.8)'); return; }
   if (state === 'hangar') { ctx.restore(); uiCol(drawHangar, 'rgba(2,8,18,.8)'); return; }
   if (state === 'starmap') { ctx.restore(); drawStarMap(); return; }
-  if (state === 'tech') { ctx.restore(); drawTech(); return; }
   if (state === 'gacha') { ctx.restore(); uiCol(drawGacha, 'rgba(2,8,18,.8)'); return; }
 
   drawWorld(false);
@@ -10310,7 +10241,7 @@ function frame(now) {
   const dt = clamp((now - last) / 1000, 0, .033); last = now;
   if (state === 'play') stepWorld(dt, gm.speed);
   else if (state === 'title') { if (!DEMO || !demo || demo.key !== demoKey()) startDemo(); demoStep(dt); gachaT += dt; if (gachaMsgT > 0) gachaMsgT -= dt; }
-  else if (state === 'starmap' || state === 'tech' || state === 'codex' || state === 'hangar' || state === 'gacha') { time += dt; bgUpdate(dt); gachaT += dt; if (gachaMsgT > 0) gachaMsgT -= dt; }
+  else if (state === 'starmap' || state === 'codex' || state === 'hangar' || state === 'gacha') { time += dt; bgUpdate(dt); gachaT += dt; if (gachaMsgT > 0) gachaMsgT -= dt; }
   else if (state === 'choose' || state === 'build' || state === 'chest' || state === 'tip') time += dt;
   else if (state === 'over') { time += dt; phaseT += dt; bgUpdate(dt * .5); updateParts(dt); }
   bgmUpdate();
