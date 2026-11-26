@@ -1210,7 +1210,6 @@ function startSurvival() {
   // 每局只有一颗目标星球；占领后结算，之前的战机留下守护，已占领的星球给之后每局永久加成
   winEnd = 0; PLANET = true; planets = []; planetN = save.planets.length; planetOwned = save.planets.length; planetNextT = 0; ore = 0; oreGot = 0; oreMul = 1; modN = {}; buildCtx = null; capRes = null;
   const tg0 = smTarget(); survBossBase = tg0 ? tg0.sec : 0; runTier = tg0 && tg0.tier || 0; runHpK = tg0 ? 1 + .3 * (SECTORS[tg0.sec].diff + runTier) : 1;   // 每高一档难度相当于再深一个星区（敌人 +2 级）
-  planetBonusApply(player);
   addPlanet(-Math.PI / 2);
   // 两颗彗星：一颗在出发点左侧（开局就能看到彗尾），一颗在行星右侧的轨道圈外
   { const pl = planets[0], hx = player.x, hy = player.y + HIT_OY; addComet(hx - 250, hy - 120, 0); addComet(pl.x + Math.cos(-.2) * (pl.orbit + 120), pl.y + Math.sin(-.2) * (pl.orbit + 120), 1); }
@@ -1515,12 +1514,18 @@ function planetBonusApply(P) {
   P.s.aspd = (P.s.aspd || 0) + t[5] / 100;
 }
 // 局外产出：每局结束，已占领星球按基地等级产出矿石和星晶；本局没花完的矿石也存进仓库
-const baseIncome = s => ({ ore: 4 * (s.lv || 1), cr: 6 * (s.lv || 1) });
-const baseUpCost = lv => 30 * lv;
+// 2026-11-26（用户：矿石只在局内用，局外用物资，不能影响局内）：矿石不再带出局。
+// 抢下来的星球是破损的（s.dmg，百分比，至少 PLANET_DMG_MIN），在星图里用合金修复，修好后再用合金建设（基地等级 s.lv）。
+// 星球只决定每局带回多少星晶和合金（受损的按比例打折），不再给局内任何加成；一个星区的星球全部修好才解锁下一个星区
+const REPAIR_K = .5, PLANET_DMG_MIN = 20;   // 每 1% 受损要 0.5 合金
+const planetDmg = s => Math.max(0, Math.round(s.dmg || 0));
+const repairCost = s => Math.ceil(planetDmg(s) * REPAIR_K);
+const baseIncome = s => { const lv = s.lv || 1, k = 1 - planetDmg(s) / 100; return { cr: Math.round(6 * lv * k), al: Math.round(2 * lv * k) }; };
+const baseUpCost = lv => 20 * lv;
 function planetHarvest() {
-  let o = 0, c = 0; for (const s of save.planets) { const r = baseIncome(s); o += r.ore; c += r.cr; }
-  const left = Math.floor(ore); save.ore = (save.ore || 0) + o + left; save.crystals += c; player.earned = (player.earned || 0) + c;
-  save.lastHarvest = { ore: o, cr: c, left }; ore = 0; persist();
+  let c = 0, al = 0; for (const s of save.planets) { const r = baseIncome(s); c += r.cr; al += r.al; }
+  save.crystals += c; save.mat[0] += al; player.earned = (player.earned || 0) + c;
+  save.lastHarvest = { cr: c, al }; ore = 0; persist();
 }
 // 星球环境：在目标星球的轨道圈里生效
 const planetTarget = () => PLANET ? planets.find(p => !p.owned && !p.comet) : null;
@@ -2100,10 +2105,11 @@ function planetCaptured(p) {
   const got = stars.filter(s => s.ok).length, bonus = Math.round((STAGE_REWARD + 150 + (got - 1) * 60) * tierK(runTier));
   // 已占领的星球再打一次（难度阶梯）：不重复计入，只记录通关过的最高难度
   const done0 = sectorsDone(), old = p.sec >= 0 ? ownedAt(p.sec, p.slot) : null, tierUp = !!old && (old.tier || 0) < runTier;
-  if (old) old.tier = Math.max(old.tier || 0, runTier); else save.planets.push({ k: p.kind, name: p.name, lv: 1, sec: p.sec, slot: p.slot });
+  const dmgPct = clamp(Math.round(p.dmg / p.dmgMax * 100), PLANET_DMG_MIN, 95);   // 打完仗的星球总是破损的
+  if (old) { old.tier = Math.max(old.tier || 0, runTier); old.dmg = Math.max(planetDmg(old), dmgPct); } else save.planets.push({ k: p.kind, name: p.name, lv: 1, sec: p.sec, slot: p.slot, dmg: dmgPct });
   save.target = null;
   const unlock = sectorsDone() > done0 && SECTORS[sectorsDone()] ? SECTORS[sectorsDone()].name : ''; save.crystals += bonus; P.earned = (P.earned || 0) + bonus;
-  capRes = { p, took, kills: P.kills - p.k0, ore: Math.floor(oreGot - p.ore0), stars, got, fighter: SKINS[curSkin].name, unlock, tier: runTier, tierUp };
+  capRes = { p, dmg: dmgPct, took, kills: P.kills - p.k0, ore: Math.floor(oreGot - p.ore0), stars, got, fighter: SKINS[curSkin].name, unlock, tier: runTier, tierUp };
   // 任务完成：残敌溃散，停 WIN_HOLD 秒后进结算
   winEnd = WIN_HOLD; survWave.on = false; survWave.t = 1e9; P.inv = Math.max(P.inv, WIN_HOLD + 1); eBullets.length = 0;
   for (const e of enemies) { if (e.hp <= 0 || ENEMY_ART[e.type] && ENEMY_ART[e.type].spin) continue; if (enemyOnScr(e)) explosion(e.x, e.y, Math.min(34, e.r)); e.hp = 0; }
@@ -2762,10 +2768,9 @@ function drawPlanetHud() {
   }
   ctx.fillStyle = '#ffe6b0'; ctx.strokeText(label, W / 2, by - 5); ctx.fillText(label, W / 2, by - 5);
   // 矿石数量 + 已占领星球带来的永久加成图标
-  ctx.font = `bold 11px ${FONT}`; const oreShow = !!(t && t.def), os = !oreShow ? '' : survDoom ? String(Math.floor(ore)) : `${Math.floor(ore)}/${ORE_STEP}`, ow = oreShow ? ctx.measureText(os).width + 26 : 0, bt = planetBonusTotals(), items = bt.map((v, k) => k).filter(k => bt[k]);
-  let x = W / 2 - (ow + items.length * 20) / 2;
+  ctx.font = `bold 11px ${FONT}`; const oreShow = !!(t && t.def), os = !oreShow ? '' : survDoom ? String(Math.floor(ore)) : `${Math.floor(ore)}/${ORE_STEP}`, ow = oreShow ? ctx.measureText(os).width + 26 : 0;
+  let x = W / 2 - ow / 2;
   if (oreShow) { drawGlyph('ore', x + 6, by + 19, 12, '#ffd27a'); ctx.textAlign = 'left'; ctx.fillStyle = '#ffd27a'; ctx.strokeText(os, x + 15, by + 23); ctx.fillText(os, x + 15, by + 23); x += ow; }   // 占领后才有矿石
-  for (const k of items) { drawGlyph(PLANET_BONUS[k].gl, x + 6, by + 19, 12, `rgb(${PLANET_BONUS[k].c})`); x += 20; }
   ctx.restore();
 }
 // ================= 星区：每个星区几颗固定的星球，全部占领后解锁下一个星区（更难、有新星球种类） =================
@@ -2779,7 +2784,8 @@ const sectorKind = (sec, slot) => SECTORS[sec].kinds[slot];
 const planetLabel = (sec, slot) => PLANET_PAL[sectorKind(sec, slot)].name + '-' + 'ABCDEFG'[sec] + (slot + 1);
 const ownedAt = (sec, slot) => save.planets.find(s => s.sec === sec && s.slot === slot);
 const sectorDoneCount = sec => save.planets.filter(s => s.sec === sec).length;
-function sectorsDone() { let n = 0; while (n < SECTORS.length && sectorDoneCount(n) >= SECTORS[n].kinds.length) n++; return n; }
+const sectorFixedCount = sec => save.planets.filter(s => s.sec === sec && planetDmg(s) <= 0).length;
+function sectorsDone() { let n = 0; while (n < SECTORS.length && sectorFixedCount(n) >= SECTORS[n].kinds.length) n++; return n; }   // 全部占领并修好才算完成
 const sectorOpen = sec => sec <= sectorsDone();
 // 下一局的目标：玩家在星图里选的；没选（或已占领）就取当前星区第一颗没占领的；全部占领完返回 null（随机星球）
 function smTarget() {
@@ -2818,7 +2824,7 @@ function drawRecords() {
   const y0 = 170, rows = [
     ['hourglass', '生存最久', fmtTime(survBest)], ['planet', '已占领星球', String(save.planets.length)],
     ['squad', '星区进度', `${Math.min(SECTORS.length, sectorsDone())}/${SECTORS.length}`],
-    ['turret', '基地总等级', String(save.planets.reduce((s, p) => s + (p.lv || 1), 0))], ['ore', '矿石仓库', String(save.ore || 0)],
+    ['turret', '基地总等级', String(save.planets.reduce((s, p) => s + (p.lv || 1), 0))],
   ];
   panel(36, y0, W - 72, 60 + rows.length * 38, .96); uiRects.push({ x: 36, y: y0, w: W - 72, h: 60 + rows.length * 38, act: 'nop' });
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = `900 20px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('记 录', W / 2, y0 + 28);
@@ -2861,7 +2867,7 @@ function drawStarMap() {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.font = `900 24px ${FONT}`; ctx.fillStyle = '#e8fbff'; ctx.fillText('星 图', W / 2, 28);
   drawCrystals(W - 12, 28);
-  ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; drawGlyph('ore', 22, 28, 15, '#ffd27a'); ctx.fillStyle = '#ffe6b0'; ctx.fillText(String(save.ore || 0), 34, 29); ctx.textAlign = 'center';
+  ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'left'; drawMatIcon(0, 24, 28, 20); ctx.fillStyle = `rgb(${MATS[0].c})`; ctx.fillText(String(save.mat[0]), 38, 29); ctx.textAlign = 'center';
   const z = smCam.z, done = sectorsDone(), tg = smTarget();
   // 地图区域
   ctx.save(); ctx.beginPath(); ctx.rect(0, SM_Y0, W, SM_Y1 - SM_Y0); ctx.clip();
@@ -2948,19 +2954,23 @@ function drawStarMap() {
     ctx.textAlign = 'left'; ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = `rgb(${pal.atm})`; ctx.fillText(planetLabel(sl.sec, sl.slot), 84, 458);
     ctx.font = `12px ${FONT}`; ctx.fillStyle = '#ffd23f';
     if (o) {
-      const lv = o.lv || 1, inc = baseIncome(o), cost = baseUpCost(lv), can = lv < BASE_MAX && (save.ore || 0) >= cost;
+      // 破损的先修复，修好后才能建设（都花合金）
+      const lv = o.lv || 1, inc = baseIncome(o), dm = planetDmg(o), cost = dm > 0 ? repairCost(o) : baseUpCost(lv), can = (dm > 0 || lv < BASE_MAX) && save.mat[0] >= cost;
       ctx.fillText(`基地 Lv${lv}/${BASE_MAX}   已通关 难度 ${(o.tier || 0) + 1}`, 84, 478);
-      drawGlyph(pb.gl, 32, 506, 14, `rgb(${pb.c})`); ctx.font = `13px ${FONT}`; ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText(pb.t(planetBonusOf(o)), 46, 507);
-      ctx.fillStyle = '#cfe2f0'; ctx.fillText('每局产出', 26, 534); drawGlyph('ore', 92, 533, 12, '#ffd27a'); ctx.fillStyle = '#ffd27a'; ctx.fillText(String(inc.ore), 102, 534); gem(140, 533, 6); ctx.fillStyle = '#bff4ff'; ctx.fillText(String(inc.cr), 150, 534);
+      ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = dm > 0 ? '#ff9a7a' : '#8dffb4'; ctx.fillText(dm > 0 ? `受损 ${dm}%` : '完好', 26, 507);
+      ctx.font = `13px ${FONT}`; ctx.fillStyle = '#cfe2f0'; ctx.fillText('每局产出', 26, 534); gem(96, 533, 6); ctx.fillStyle = '#bff4ff'; ctx.fillText(String(inc.cr), 106, 534); drawMatIcon(0, 142, 533, 18); ctx.fillStyle = `rgb(${MATS[0].c})`; ctx.fillText(String(inc.al), 154, 534);
       ctx.textAlign = 'center';
-      if (lv < BASE_MAX) { uiBtn(W - 142, 490, 118, 38, `升级 ${cost}`, 'smup', { off: !can, dx: 8, fill: can ? 'rgba(30,110,170,.9)' : 'rgba(40,50,60,.8)', stroke: can ? '#9fe8ff' : 'rgba(150,160,170,.5)' }); drawGlyph('ore', W - 120, 510, 12, can ? '#ffd27a' : '#998866'); }
+      if (dm > 0 || lv < BASE_MAX) {
+        uiBtn(W - 142, 490, 118, 38, '', dm > 0 ? 'smfix' : 'smup', { off: !can, tint: dm > 0 ? 'gold' : 'blue' });
+        drawMatIcon(0, W - 122, 509, 18); ctx.font = `bold 14px ${FONT}`; ctx.fillStyle = can ? '#ffffff' : 'rgba(225,232,240,.7)'; ctx.fillText((dm > 0 ? '修复 ' : '建设 ') + cost, W - 74, 510);
+      }
       else { ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = '#ffd23f'; ctx.fillText('已满级', W - 83, 510); }
       { const on = tg && tg.tier && tg.sec === sl.sec && tg.slot === sl.slot;   // 难度阶梯：再打一次更难的，通关后解锁下一档
         uiBtn(W - 142, 440, 118, 40, (on ? '目标 · 难度 ' : '挑战 难度 ') + ((o.tier || 0) + 2), 'smtier', { tint: on ? 'gold' : 'rose', fill: on ? 'rgba(120,80,10,.92)' : 'rgba(110,40,60,.92)', stroke: on ? '#ffd77a' : '#ff9ab0', fs: 13 }); }
     } else {
       ctx.fillText('难度 ' + '★'.repeat(SECTORS[sl.sec].diff + 1), 84, 478);
       ctx.font = `13px ${FONT}`; ctx.fillStyle = `rgb(${pal.atm})`; ctx.fillText('环境：' + ENV_TXT[k], 26, 506);
-      drawGlyph(pb.gl, 32, 532, 14, `rgb(${pb.c})`); ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText('占领后 ' + pb.t(PLANET_BONUS_BASE[k] * (k === 1 ? 1 : 1)), 46, 533);
+      ctx.fillStyle = '#cfe2f0'; ctx.fillText('占领后 每局产出', 26, 533); gem(140, 532, 6); ctx.fillStyle = '#bff4ff'; ctx.fillText('6', 150, 533); drawMatIcon(0, 176, 532, 18); ctx.fillStyle = `rgb(${MATS[0].c})`; ctx.fillText('2', 188, 533);
       ctx.textAlign = 'center'; ctx.font = `bold 13px ${FONT}`;
       if (!open) { ctx.fillStyle = 'rgba(190,200,215,.7)'; ctx.fillText('未解锁', W - 83, 508); }
       else if (tg && tg.sec === sl.sec && tg.slot === sl.slot) { ctx.fillStyle = '#ffd77a'; ctx.fillText('下一局目标', W - 83, 508); }
@@ -2968,7 +2978,7 @@ function drawStarMap() {
   } else { ctx.font = `13px ${FONT}`; ctx.fillStyle = 'rgba(190,220,240,.6)'; ctx.fillText('点击星球查看', W / 2, 494); }
   ctx.textAlign = 'center';
   const lh = save.lastHarvest;
-  if (lh && (lh.ore || lh.cr || lh.left)) { ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.7)'; ctx.fillText(`上一局：星球产出 矿石 ${lh.ore} · 星晶 ${lh.cr}，带回矿石 ${lh.left}`, W / 2, 574); }
+  if (lh && (lh.cr || lh.al)) { ctx.font = `11px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.7)'; ctx.fillText(`上一局：星球产出 星晶 ${lh.cr} · 合金 ${lh.al || 0}`, W / 2, 574); }
   const bw = (W - 30) / 2;
   uiBtn(12, H - 104, bw, 40, '记录 [R]', 'rec', { tint: 'gold', fill: 'rgba(70,60,20,.9)', stroke: '#ffd780' });
   uiBtn(18 + bw, H - 104, bw, 40, '返回 [Esc]', 'back', { tint: 'steel' });
@@ -2989,10 +2999,10 @@ function smAct(a) {
     save.target = c && c.tier && c.sec === smSel.sec && c.slot === smSel.slot ? null : { sec: smSel.sec, slot: smSel.slot, tier: (s.tier || 0) + 1 };
     persist(); sfxTap();
   }
-  else if (a === 'smup') {
-    const s = smSel && ownedAt(smSel.sec, smSel.slot); if (!s) return; const lv = s.lv || 1, cost = baseUpCost(lv);
-    if (lv >= BASE_MAX || (save.ore || 0) < cost) { tone(150, .12, 'square', .04); return; }
-    save.ore -= cost; s.lv = lv + 1; persist(); sfxPick();
+  else if (a === 'smup' || a === 'smfix') {   // 修复 / 建设：都花合金；破损的必须先修
+    const s = smSel && ownedAt(smSel.sec, smSel.slot); if (!s) return; const lv = s.lv || 1, dm = planetDmg(s), cost = dm > 0 ? repairCost(s) : baseUpCost(lv);
+    if ((dm <= 0 && lv >= BASE_MAX) || save.mat[0] < cost) { tone(150, .12, 'square', .04); return; }
+    save.mat[0] -= cost; if (dm > 0) s.dmg = 0; else s.lv = lv + 1; persist(); sfxPick();
   }
 }
 // 点地图：选星球（没占领的直接设为下一局目标）
@@ -6092,10 +6102,11 @@ let save = (() => { try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); 
 function persist() { if (demoSilent) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { } }
 curSkin = save.fighters[save.load.fighter] ? save.load.fighter : 'silver';
 if (!Array.isArray(save.planets)) save.planets = [];
-if (typeof save.ore !== 'number') save.ore = 0;
+// （局外矿石 2026-11-26 取消：旧存档里的矿石 1:1 换成合金，见下面材料初始化之后）
 // 科技树 2026-11-26 整个删掉：已研究的按当时的价格退还矿石（矿石还能在星图里升级基地），加成不再生效
 if (save.tech) { const COST = { f1: 40, f2: 80, f3: 140, f4: 220, s1: 40, s2: 80, s3: 140, s4: 220, b1: 40, b3: 140, b4: 220 }; let back = 0; for (const k in save.tech) if (save.tech[k]) back += COST[k] || 0; delete save.tech; if (back) save.ore = (save.ore || 0) + back; persist(); }
 if (!Array.isArray(save.mat)) save.mat = [0, 0, 0];   // 合成材料：合金 / 能量核 / 星核
+if (save.ore !== undefined) { const o = Math.max(0, Math.floor(+save.ore || 0)); save.mat[0] += o; delete save.ore; persist(); }   // 局外矿石取消：1:1 换成合金
 if (!save.bp) save.bp = {};   // 抽到但还没合成的设计图：{ 'f:战机id' 或装备 key: 张数 }
 // 2026-11-22 副武器取消（功能并进僚机）：旧存档里的副武器直接删掉，不返还
 for (const k of Object.keys(save.gear)) if (k.startsWith('s:')) delete save.gear[k];
@@ -9967,8 +9978,8 @@ function drawCapRes() {
   rows.forEach(([gl, n, v], i) => { const y = 391 + i * 27; if (gl === 'igem') gem(64, y, 6); else drawGlyph(gl, 64, y, 15, '#8fdcff'); ctx.textAlign = 'left'; ctx.font = `13px ${FONT}`; ctx.fillStyle = '#b9d6ea'; ctx.fillText(n, 82, y); ctx.textAlign = 'right'; ctx.font = `bold 15px ${FONT}`; ctx.fillStyle = '#fff'; ctx.fillText(v, W - 58, y); });
   ctx.textAlign = 'center';
   if (t > 1.9) {
-    ctx.font = `bold 15px ${FONT}`; const bt = r.tier ? `难度奖励  星晶 ×${tierK(r.tier).toFixed(1)}` : '永久加成  ' + pb.t(cnt), bw = ctx.measureText(bt).width;
-    drawGlyph(pb.gl, W / 2 - bw / 2 - 14, 520 + ex, 20, `rgb(${pb.c})`); ctx.fillStyle = `rgb(${pb.c})`; ctx.fillText(bt, W / 2 + 6, 521 + ex);
+    ctx.font = `bold 15px ${FONT}`; const bt = r.tier ? `难度奖励  星晶 ×${tierK(r.tier).toFixed(1)}` : `星球受损 ${r.dmg ?? 0}% · 回星图用合金修复`, bw = ctx.measureText(bt).width, bc = r.tier ? '255,210,110' : '255,170,130';
+    drawGlyph('planet', W / 2 - bw / 2 - 14, 520 + ex, 18, `rgb(${bc})`); ctx.fillStyle = `rgb(${bc})`; ctx.fillText(bt, W / 2 + 6, 521 + ex);
     ctx.font = `bold 16px ${FONT}`; ctx.fillStyle = '#bff4ff'; const tx = '获得星晶  ' + fmt(player.earned || 0), tw = ctx.measureText(tx).width; gem(W / 2 - tw / 2 - 12, 552 + ex, 8); ctx.fillText(tx, W / 2 + 4, 552 + ex);
     drawMatRow(W / 2, 578 + ex, player.matGot || [0, 0, 0], { plus: true, s: 18, fs: 13 });   // 本局捡到的材料
     ctx.font = `12px ${FONT}`; ctx.fillStyle = 'rgba(200,225,245,.72)'; ctx.fillText(`${r.fighter} 留在 ${p.name} 维修和守护这颗星球`, W / 2, 604 + ex);
